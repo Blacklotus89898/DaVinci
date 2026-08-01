@@ -14,11 +14,20 @@ linters:
   settings:
     errcheck:
       exclude-functions:
+        # Writing to http.ResponseWriter — errors are handled by the framework.
         - (net/http.ResponseWriter).Write
+        - fmt.Fprintln
+        # database/sql cleanup in defer or error-path close — already returning another error.
         - (*database/sql.Tx).Rollback
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        # HTTP response body close — standard deferred cleanup pattern.
+        - (io.ReadCloser).Close
 
 issues:
   exclude-rules:
+    # Suppress errcheck on intentional fire-and-forget stmt.Exec in vocab rebuild.
     - path: internal/store/store\.go
       linters: [errcheck]
       text: "stmt.Exec"
