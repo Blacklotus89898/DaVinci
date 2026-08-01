@@ -82,7 +82,7 @@ func Ingest(s *Store, docsPath string) error {
 				existingIDs = append(existingIDs, id)
 			}
 		}
-		idRows.Close()
+		_ = idRows.Close()
 		for _, id := range existingIDs {
 			if _, err := tx.Exec(`DELETE FROM chunks_fts WHERE rowid=?`, id); err != nil {
 				return err
@@ -127,7 +127,7 @@ func loadDocs(root string) ([]pendingDoc, error) {
 		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") {
 			return err
 		}
-		data, err := os.ReadFile(p)
+		data, err := os.ReadFile(p) //nolint:gosec // p comes from filepath.WalkDir within the trusted DOCS_PATH directory
 		if err != nil {
 			return fmt.Errorf("read %s: %w", p, err)
 		}

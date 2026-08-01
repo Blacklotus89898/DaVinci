@@ -160,7 +160,7 @@ func TestToolCallSearchHit(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "ops.md"), []byte(`# Ops
 ## ArgoCD OOM Fix
 ArgoCD was OOM killed. Fix by deploying pod-cleanup CronJob every 15 minutes.
-`), 0o644)
+`), 0o600)
 	if err := store.Ingest(s, dir); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestToolCallListEmpty(t *testing.T) {
 func TestToolCallListAfterIngest(t *testing.T) {
 	srv, s := newTestServer(t)
 	dir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(dir, "ops.md"), []byte("# Ops\n## ArgoCD Fix\nFix content.\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "ops.md"), []byte("# Ops\n## ArgoCD Fix\nFix content.\n"), 0o600)
 	_ = store.Ingest(s, dir)
 
 	resp := exchange(t, srv, `{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"list_knowledge","arguments":{}}}`)
@@ -267,7 +267,7 @@ func TestToolCallListAfterIngest(t *testing.T) {
 func TestToolCallDelete(t *testing.T) {
 	srv, s := newTestServer(t)
 	dir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(dir, "todelete.md"), []byte("# Delete Me\n## Section\nContent.\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "todelete.md"), []byte("# Delete Me\n## Section\nContent.\n"), 0o600)
 	_ = store.Ingest(s, dir)
 
 	// Verify it exists.
@@ -405,7 +405,7 @@ func TestToolCallWriteWithDocsPath(t *testing.T) {
 
 	// Verify the .md file exists with the right content.
 	mdPath := filepath.Join(docsDir, "runbooks", "test-runbook.md")
-	data, err := os.ReadFile(mdPath)
+	data, err := os.ReadFile(mdPath) //nolint:gosec // test reads a known temp dir path
 	if err != nil {
 		t.Fatalf("expected markdown file at %s: %v", mdPath, err)
 	}

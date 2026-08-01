@@ -17,13 +17,15 @@ linters:
         # Writing to http.ResponseWriter — errors are handled by the framework.
         - (net/http.ResponseWriter).Write
         - fmt.Fprintln
-        # database/sql cleanup in defer or error-path close — already returning another error.
+        # database/sql cleanup — in defer or error-path close, not actionable.
         - (*database/sql.Tx).Rollback
         - (*database/sql.DB).Close
         - (*database/sql.Rows).Close
         - (*database/sql.Stmt).Close
         # HTTP response body close — standard deferred cleanup pattern.
         - (io.ReadCloser).Close
+        # Store.Close is called in defer at process exit or test cleanup.
+        - (*github.com/blacklotus88888/knowledge-service/internal/store.Store).Close
 
 issues:
   exclude-rules:
@@ -31,3 +33,8 @@ issues:
     - path: internal/store/store\.go
       linters: [errcheck]
       text: "stmt.Exec"
+    # noctx: golangci-lint v2 expanded noctx to flag all database/sql calls
+    # without context (db.Begin, tx.Query, stmt.Exec, etc.). Fixing this
+    # requires adding context.Context to every store method — tracked separately.
+    - path: internal/store
+      linters: [noctx]

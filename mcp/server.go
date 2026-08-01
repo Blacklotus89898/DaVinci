@@ -363,18 +363,18 @@ func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.Raw
 // upsertMarkdownSection writes or updates a "## heading" section in the markdown file at filePath.
 // Parent directories and the file itself are created if they don't exist.
 func upsertMarkdownSection(filePath, heading, content string) error {
-	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
 		return err
 	}
-	existing, err := os.ReadFile(filePath)
+	existing, err := os.ReadFile(filePath) //nolint:gosec // filePath is DOCS_PATH-rooted via filepath.Join
 	if err != nil {
 		// New file: derive a title from the filename.
 		stem := strings.TrimSuffix(filepath.Base(filePath), ".md")
 		title := strings.ReplaceAll(stem, "-", " ")
 		text := "# " + title + "\n\n## " + heading + "\n\n" + strings.TrimSpace(content) + "\n"
-		return os.WriteFile(filePath, []byte(text), 0o600)
+		return os.WriteFile(filePath, []byte(text), 0o600) //nolint:gosec // path is DOCS_PATH-rooted
 	}
-	return os.WriteFile(filePath, []byte(updateSection(string(existing), heading, content)), 0o600)
+	return os.WriteFile(filePath, []byte(updateSection(string(existing), heading, content)), 0o600) //nolint:gosec // path is DOCS_PATH-rooted
 }
 
 // updateSection finds "## heading" in md and replaces its body with content.

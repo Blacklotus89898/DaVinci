@@ -64,7 +64,7 @@ func (p *OllamaProvider) embedWith(client *http.Client, text string) ([]float32,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec
 		return nil, fmt.Errorf("ollama returned HTTP %d", resp.StatusCode)
 	}
 	var result struct {

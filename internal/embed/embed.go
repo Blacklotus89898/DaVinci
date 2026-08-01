@@ -168,9 +168,9 @@ func ToBytes(v []float32) []byte {
 	b := make([]byte, len(v)*4)
 	for i, f := range v {
 		bits := math.Float32bits(f)
-		b[i*4] = byte(bits)
-		b[i*4+1] = byte(bits >> 8)
-		b[i*4+2] = byte(bits >> 16)
+		b[i*4] = byte(bits)         //nolint:gosec // intentional bit-packing: truncation is correct
+		b[i*4+1] = byte(bits >> 8)  //nolint:gosec
+		b[i*4+2] = byte(bits >> 16) //nolint:gosec
 		b[i*4+3] = byte(bits >> 24)
 	}
 	return b
@@ -192,6 +192,6 @@ func FromBytes(b []byte) []float32 {
 
 func hashTerm(s string) uint32 {
 	h := fnv.New32a()
-	h.Write([]byte(s))
+	h.Write([]byte(s)) //nolint:gosec // hash.Write never returns an error per the hash.Hash interface
 	return h.Sum32()
 }
