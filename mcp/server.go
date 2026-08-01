@@ -193,7 +193,7 @@ func toolsList() []map[string]any {
 		},
 		{
 			"name":        "write_knowledge",
-			"description": "Save a new entry to the knowledge base. Call this after solving a non-trivial problem, completing an incident, or discovering something non-obvious so future sessions benefit.",
+			"description": "Save a new entry to the knowledge base as a markdown file. Call this after solving a non-trivial problem, completing an incident, or discovering something non-obvious so future sessions benefit. The entry is persisted as a .md file on disk and indexed in the DB.",
 			"inputSchema": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -453,6 +453,14 @@ func (srv *Server) toolDelete(enc *json.Encoder, id json.RawMessage, raw json.Ra
 	if err := json.Unmarshal(raw, &args); err != nil || args.Path == "" {
 		srv.replyErr(enc, id, -32602, "path is required")
 		return
+	}
+
+	// In markdown mode, remove the .md file from disk so it isn't re-ingested on next startup.
+	if srv.docsPath != "" {
+		filePath := filepath.Join(srv.docsPath, args.Path)
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			srv.logger.Warn("could not remove markdown file", "path", filePath, "err", err)
+		}
 	}
 
 	n, err := srv.store.DeleteDocument(args.Path)

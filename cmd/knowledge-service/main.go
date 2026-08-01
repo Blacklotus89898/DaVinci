@@ -25,7 +25,9 @@ func main() {
 	flag.Parse()
 
 	dbPath := env("DB_PATH", "knowledge.db")
-	docsPath := env("DOCS_PATH", "")
+	// DOCS_PATH defaults to "docs" — the DB is always a derived index from markdown files.
+	// Set DOCS_PATH="" to disable markdown mode and use the DB as primary storage.
+	docsPath := env("DOCS_PATH", "docs")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: logLevel(env("LOG_LEVEL", "info")),
 	}))
@@ -55,6 +57,21 @@ func main() {
 		} else {
 			db.SetProvider(p)
 			logger.Info("embedding provider", "type", "ollama", "model", ollamaModel, "dims", p.Dims())
+		}
+	}
+
+	// Sync DB from markdown files on every startup so the index always reflects what's on disk.
+	// Any manual edits to .md files are picked up here without needing to run `make ingest`.
+	if docsPath != "" {
+		if info, err := os.Stat(docsPath); err == nil && info.IsDir() {
+			logger.Info("syncing knowledge base from docs", "path", docsPath)
+			if err := store.Ingest(db, docsPath); err != nil {
+				logger.Warn("startup ingest failed", "path", docsPath, "err", err)
+			} else {
+				logger.Info("docs synced", "path", docsPath)
+			}
+		} else {
+			logger.Info("docs directory not found, starting with empty knowledge base", "path", docsPath)
 		}
 	}
 

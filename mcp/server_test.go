@@ -428,6 +428,15 @@ func TestToolCallWriteWithDocsPath(t *testing.T) {
 	if strings.Count(string(data2), "## Pod Drain Fix") != 1 {
 		t.Errorf("expected exactly one heading after update; got:\n%s", data2)
 	}
+
+	// Delete should remove the markdown file from disk.
+	resp = exchange(t, srv, `{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"delete_knowledge","arguments":{"path":"runbooks/test-runbook.md"}}}`)
+	if _, ok := resp["result"].(map[string]any); !ok {
+		t.Fatalf("delete failed: %v", resp)
+	}
+	if _, err := os.Stat(mdPath); !os.IsNotExist(err) {
+		t.Errorf("expected markdown file to be removed from disk after delete")
+	}
 }
 
 func TestUpdateSection(t *testing.T) {
