@@ -382,6 +382,83 @@ func TestGetToolEmptyKB(t *testing.T) {
 	}
 }
 
+func TestToolCallWriteWithDocsPath(t *testing.T) {
+	docsDir := t.TempDir()
+	s, err := store.Open(filepath.Join(t.TempDir(), "docs_test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	srv := NewServer(s, logger, docsDir)
+
+	// First write — creates the file.
+	resp := exchange(t, srv, `{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"write_knowledge","arguments":{"path":"runbooks/test-runbook.md","heading":"Pod Drain Fix","content":"kubectl drain node --ignore-daemonsets"}}}`)
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("write failed: %v", resp)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "Saved") {
+		t.Errorf("expected Saved confirmation, got: %q", text)
+	}
+
+	// Verify the .md file exists with the right content.
+	mdPath := filepath.Join(docsDir, "runbooks", "test-runbook.md")
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatalf("expected markdown file at %s: %v", mdPath, err)
+	}
+	if !strings.Contains(string(data), "Pod Drain Fix") {
+		t.Errorf("markdown missing heading; got:\n%s", data)
+	}
+	if !strings.Contains(string(data), "kubectl drain") {
+		t.Errorf("markdown missing content; got:\n%s", data)
+	}
+
+	// Second write to same heading — should update in place.
+	resp = exchange(t, srv, `{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"write_knowledge","arguments":{"path":"runbooks/test-runbook.md","heading":"Pod Drain Fix","content":"Updated: kubectl drain node --delete-emptydir-data"}}}`)
+	if _, ok := resp["result"].(map[string]any); !ok {
+		t.Fatalf("second write failed: %v", resp)
+	}
+	data2, _ := os.ReadFile(mdPath)
+	if !strings.Contains(string(data2), "Updated:") {
+		t.Errorf("second write should update the section; got:\n%s", data2)
+	}
+	if strings.Count(string(data2), "## Pod Drain Fix") != 1 {
+		t.Errorf("expected exactly one heading after update; got:\n%s", data2)
+	}
+}
+
+func TestUpdateSection(t *testing.T) {
+	base := "# Title\n\n## Alpha\n\noriginal alpha content\n\n## Beta\n\nbeta content\n"
+
+	// Update existing section — old text must be gone, new text present, Beta preserved.
+	out := updateSection(base, "Alpha", "replacement alpha content")
+	if !strings.Contains(out, "replacement alpha content") {
+		t.Errorf("expected updated content; got:\n%s", out)
+	}
+	if strings.Contains(out, "original alpha content") {
+		t.Errorf("old content should be replaced; got:\n%s", out)
+	}
+	if !strings.Contains(out, "## Beta") {
+		t.Errorf("Beta section should be preserved; got:\n%s", out)
+	}
+
+	// Append a brand-new section.
+	out2 := updateSection(base, "Gamma", "gamma content")
+	if !strings.Contains(out2, "## Gamma") {
+		t.Errorf("expected new section appended; got:\n%s", out2)
+	}
+	if !strings.Contains(out2, "gamma content") {
+		t.Errorf("expected new content in appended section; got:\n%s", out2)
+	}
+	// Original sections must survive.
+	if !strings.Contains(out2, "## Alpha") || !strings.Contains(out2, "## Beta") {
+		t.Errorf("original sections missing after append; got:\n%s", out2)
+	}
+}
+
 func TestNegotiateVersion(t *testing.T) {
 	cases := []struct {
 		client string

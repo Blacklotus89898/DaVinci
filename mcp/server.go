@@ -364,9 +364,9 @@ func upsertMarkdownSection(filePath, heading, content string) error {
 		stem := strings.TrimSuffix(filepath.Base(filePath), ".md")
 		title := strings.ReplaceAll(stem, "-", " ")
 		text := "# " + title + "\n\n## " + heading + "\n\n" + strings.TrimSpace(content) + "\n"
-		return os.WriteFile(filePath, []byte(text), 0o644)
+		return os.WriteFile(filePath, []byte(text), 0o600)
 	}
-	return os.WriteFile(filePath, []byte(updateSection(string(existing), heading, content)), 0o644)
+	return os.WriteFile(filePath, []byte(updateSection(string(existing), heading, content)), 0o600)
 }
 
 // updateSection finds "## heading" in md and replaces its body with content.

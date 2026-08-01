@@ -26,7 +26,7 @@ func seedDocs(t *testing.T, s *Store) string {
 
 	writeFile := func(name, content string) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
 			t.Fatalf("writeFile %s: %v", name, err)
 		}
 	}
@@ -173,7 +173,7 @@ func TestReIngestPreservesOtherDocs(t *testing.T) {
 	dir := seedDocs(t, s)
 
 	// Re-ingest only the argocd doc (simulate partial re-ingest by adding a new file).
-	if err := os.WriteFile(filepath.Join(dir, "new.md"), []byte("# New\n## Section\nNew content.\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "new.md"), []byte("# New\n## Section\nNew content.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := Ingest(s, dir); err != nil {
@@ -323,11 +323,8 @@ func TestBuildFTSQuerySynonymSafety(t *testing.T) {
 	if andQ != "oomkilled*" {
 		t.Errorf("AND query = %q; want 'oomkilled*' (no synonym injection)", andQ)
 	}
-	// OR query may include expansion tokens for broader recall.
-	if orQ == andQ {
-		// single raw token → same string is fine, but oom* could be added
-		// this is acceptable either way
-	}
+	// OR query may include expansion tokens for broader recall — we only assert the AND is clean.
+	_ = orQ
 
 	// Multi-token: AND must not include synonym-only tokens.
 	andQ2, _ := buildFTSQuery("OOMKilled pod")
@@ -353,7 +350,7 @@ Gamma content about Cilium CNI eBPF networking and routing.
 `
 	for i := 0; i < 20; i++ {
 		path := filepath.Join(dir, strings.Repeat("a", i+1)+".md")
-		_ = os.WriteFile(path, []byte(md), 0o644)
+		_ = os.WriteFile(path, []byte(md), 0o600)
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -372,7 +369,7 @@ func BenchmarkHybridCold(b *testing.B) {
 Kubernetes ArgoCD pod deployment sync failed OOM disk pressure Cilium eBPF networking.
 `
 	for i := 0; i < 20; i++ {
-		_ = os.WriteFile(filepath.Join(dir, strings.Repeat("d", i+1)+".md"), []byte(md), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, strings.Repeat("d", i+1)+".md"), []byte(md), 0o600)
 	}
 	_ = Ingest(s, dir)
 
@@ -392,7 +389,7 @@ func BenchmarkHybridWarm(b *testing.B) {
 Kubernetes ArgoCD pod deployment sync failed OOM disk pressure Cilium eBPF networking.
 `
 	for i := 0; i < 20; i++ {
-		_ = os.WriteFile(filepath.Join(dir, strings.Repeat("e", i+1)+".md"), []byte(md), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, strings.Repeat("e", i+1)+".md"), []byte(md), 0o600)
 	}
 	_ = Ingest(s, dir)
 	_, _ = Hybrid(s, "kubernetes pod oom fix", 5, false) // prime cache

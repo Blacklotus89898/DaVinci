@@ -82,9 +82,7 @@ func Tokenize(text string) []string {
 		out = append(out, w)
 		if exps, ok := sreExpansions[w]; ok && !expanded[w] {
 			expanded[w] = true
-			for _, e := range exps {
-				out = append(out, e)
-			}
+			out = append(out, exps...)
 		}
 	}
 	return out
@@ -126,7 +124,7 @@ func Vectorize(tf map[string]float64, idf map[string]float64, idfDefault float64
 		}
 		w := float32(tfVal * idfVal)
 		h := hashTerm(term)
-		dim := (h >> 1) % uint32(dims)
+		dim := (h >> 1) % uint32(dims) //nolint:gosec // dims is always positive and bounded by embed.DefaultDims
 		if h&1 == 1 {
 			vec[dim] -= w
 		} else {

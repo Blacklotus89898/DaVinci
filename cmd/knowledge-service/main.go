@@ -119,7 +119,11 @@ func runHTTP(srv *mcp.Server, db *store.Store, logger *slog.Logger, addr string)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	httpSrv := &http.Server{Addr: addr, Handler: handler}
+	httpSrv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	go func() {
 		<-ctx.Done()
