@@ -5,6 +5,7 @@
       "command": "~/.local/bin/knowledge-service",
       "env": {
         "DB_PATH": "./knowledge.db",
+        "DOCS_PATH": "./docs",
         "EMBED_PROVIDER": "ollama",
         "EMBED_URL": "http://localhost:11434",
         "EMBED_MODEL": "nomic-embed-text",

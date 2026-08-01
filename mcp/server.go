@@ -320,12 +320,15 @@ func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.Raw
 	}
 
 	if srv.docsPath != "" {
+		// Normalize path — always store with .md so list_knowledge/delete_knowledge paths stay consistent.
+		mdPath := args.Path
+		if !strings.HasSuffix(mdPath, ".md") {
+			mdPath += ".md"
+		}
+		filePath := filepath.Join(srv.docsPath, mdPath)
+
 		// Markdown-as-source-of-truth: write/update the .md file on disk, then re-ingest.
 		// The DB is a derived index — the .md file is the canonical record.
-		filePath := filepath.Join(srv.docsPath, args.Path)
-		if !strings.HasSuffix(filePath, ".md") {
-			filePath += ".md"
-		}
 		if err := upsertMarkdownSection(filePath, args.Heading, args.Content); err != nil {
 			srv.logger.Error("write markdown failed", "path", filePath, "err", err)
 			srv.replyErr(enc, id, -32603, "write error")
@@ -336,20 +339,25 @@ func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.Raw
 			srv.replyErr(enc, id, -32603, "ingest error")
 			return
 		}
+		srv.reply(enc, id, map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": fmt.Sprintf("Saved to knowledge base: %s / %s", mdPath, args.Heading),
+			}},
+		})
 	} else {
 		if err := srv.store.WriteChunk(args.Path, args.Heading, args.Content); err != nil {
 			srv.logger.Error("write failed", "err", err)
 			srv.replyErr(enc, id, -32603, "write error")
 			return
 		}
+		srv.reply(enc, id, map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": fmt.Sprintf("Saved to knowledge base: %s / %s", args.Path, args.Heading),
+			}},
+		})
 	}
-
-	srv.reply(enc, id, map[string]any{
-		"content": []map[string]any{{
-			"type": "text",
-			"text": fmt.Sprintf("Saved to knowledge base: %s / %s", args.Path, args.Heading),
-		}},
-	})
 }
 
 // upsertMarkdownSection writes or updates a "## heading" section in the markdown file at filePath.
@@ -456,14 +464,20 @@ func (srv *Server) toolDelete(enc *json.Encoder, id json.RawMessage, raw json.Ra
 	}
 
 	// In markdown mode, remove the .md file from disk so it isn't re-ingested on next startup.
+	docPath := args.Path
 	if srv.docsPath != "" {
-		filePath := filepath.Join(srv.docsPath, args.Path)
+		mdPath := docPath
+		if !strings.HasSuffix(mdPath, ".md") {
+			mdPath += ".md"
+		}
+		docPath = mdPath
+		filePath := filepath.Join(srv.docsPath, mdPath)
 		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
 			srv.logger.Warn("could not remove markdown file", "path", filePath, "err", err)
 		}
 	}
 
-	n, err := srv.store.DeleteDocument(args.Path)
+	n, err := srv.store.DeleteDocument(docPath)
 	if err != nil {
 		srv.logger.Error("delete failed", "path", args.Path, "err", err)
 		srv.replyErr(enc, id, -32603, err.Error())
