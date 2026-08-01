@@ -47,6 +47,10 @@ type Store struct {
 	tfidfDims int            // dimension for TF-IDF vectors (ignored when provider != nil)
 }
 
+// currentSchemaVersion is incremented when the schema changes in a way that
+// requires a migration. Open() rejects databases created by a newer binary.
+const currentSchemaVersion = 1
+
 const schema = `
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -95,6 +99,21 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+
+	// Check schema version. Stamp fresh databases; reject databases from newer binaries.
+	var ver int
+	_ = db.QueryRow(`PRAGMA user_version`).Scan(&ver)
+	switch {
+	case ver == 0:
+		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("set schema version: %w", err)
+		}
+	case ver > currentSchemaVersion:
+		db.Close()
+		return nil, fmt.Errorf("database schema version %d is newer than this binary supports (%d) — upgrade knowledge-service", ver, currentSchemaVersion)
+	}
+	// ver == currentSchemaVersion: already up to date. Future migrations go here.
 
 	s := &Store{
 		DB:        db,

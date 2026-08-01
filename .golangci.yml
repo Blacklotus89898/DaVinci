@@ -1,0 +1,26 @@
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosec
+    - noctx
+    - bodyclose
+    - exhaustive
+
+linters-settings:
+  errcheck:
+    # Ignore errors from defer Close and intentional nolint sites.
+    exclude-functions:
+      - (net/http.ResponseWriter).Write
+      - (*database/sql.Tx).Rollback
+
+issues:
+  exclude-rules:
+    # Suppress errcheck on intentional fire-and-forget stmt.Exec in vocab rebuild.
+    - path: internal/store/store\.go
+      linters: [errcheck]
+      text: "stmt.Exec"

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/blacklotus88888/knowledge-service/internal/store"
@@ -16,13 +18,15 @@ var supportedVersions = []string{"2025-03-26", "2024-11-05"}
 
 // Server implements an MCP (Model Context Protocol) JSON-RPC 2.0 server over stdio.
 type Server struct {
-	store  *store.Store
-	logger *slog.Logger
+	store    *store.Store
+	logger   *slog.Logger
+	docsPath string // if non-empty, write_knowledge persists to .md files here
 }
 
-// NewServer creates a Server.
-func NewServer(s *store.Store, logger *slog.Logger) *Server {
-	return &Server{store: s, logger: logger}
+// NewServer creates a Server. docsPath, when non-empty, activates markdown-as-source-of-truth
+// mode: write_knowledge writes .md files to docsPath and re-ingests instead of writing to the DB directly.
+func NewServer(s *store.Store, logger *slog.Logger, docsPath string) *Server {
+	return &Server{store: s, logger: logger, docsPath: docsPath}
 }
 
 // Run reads JSON-RPC messages from r and writes responses to w until EOF.
@@ -315,12 +319,30 @@ func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.Raw
 		return
 	}
 
-	if err := srv.store.WriteChunk(args.Path, args.Heading, args.Content); err != nil {
-		srv.logger.Error("write failed", "err", err)
-		srv.replyErr(enc, id, -32603, "write error")
-		return
+	if srv.docsPath != "" {
+		// Markdown-as-source-of-truth: write/update the .md file on disk, then re-ingest.
+		// The DB is a derived index — the .md file is the canonical record.
+		filePath := filepath.Join(srv.docsPath, args.Path)
+		if !strings.HasSuffix(filePath, ".md") {
+			filePath += ".md"
+		}
+		if err := upsertMarkdownSection(filePath, args.Heading, args.Content); err != nil {
+			srv.logger.Error("write markdown failed", "path", filePath, "err", err)
+			srv.replyErr(enc, id, -32603, "write error")
+			return
+		}
+		if err := store.Ingest(srv.store, srv.docsPath); err != nil {
+			srv.logger.Error("ingest failed after markdown write", "err", err)
+			srv.replyErr(enc, id, -32603, "ingest error")
+			return
+		}
+	} else {
+		if err := srv.store.WriteChunk(args.Path, args.Heading, args.Content); err != nil {
+			srv.logger.Error("write failed", "err", err)
+			srv.replyErr(enc, id, -32603, "write error")
+			return
+		}
 	}
-	// WriteChunk already purges the LRU cache; no additional invalidation needed.
 
 	srv.reply(enc, id, map[string]any{
 		"content": []map[string]any{{
@@ -328,6 +350,55 @@ func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.Raw
 			"text": fmt.Sprintf("Saved to knowledge base: %s / %s", args.Path, args.Heading),
 		}},
 	})
+}
+
+// upsertMarkdownSection writes or updates a "## heading" section in the markdown file at filePath.
+// Parent directories and the file itself are created if they don't exist.
+func upsertMarkdownSection(filePath, heading, content string) error {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		return err
+	}
+	existing, err := os.ReadFile(filePath)
+	if err != nil {
+		// New file: derive a title from the filename.
+		stem := strings.TrimSuffix(filepath.Base(filePath), ".md")
+		title := strings.ReplaceAll(stem, "-", " ")
+		text := "# " + title + "\n\n## " + heading + "\n\n" + strings.TrimSpace(content) + "\n"
+		return os.WriteFile(filePath, []byte(text), 0o644)
+	}
+	return os.WriteFile(filePath, []byte(updateSection(string(existing), heading, content)), 0o644)
+}
+
+// updateSection finds "## heading" in md and replaces its body with content.
+// If the heading is absent, appends a new section at the end.
+func updateSection(md, heading, content string) string {
+	target := "## " + heading
+	lines := strings.Split(md, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimRight(line, " ") == target {
+			start = i
+			break
+		}
+	}
+	if start == -1 {
+		return strings.TrimRight(md, "\n") + "\n\n## " + heading + "\n\n" + strings.TrimSpace(content) + "\n"
+	}
+	// Find the end of this section: next # or ## heading (but not ###).
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "## ") || strings.HasPrefix(lines[i], "# ") {
+			end = i
+			break
+		}
+	}
+	var out []string
+	out = append(out, lines[:start]...)
+	out = append(out, target, "")
+	out = append(out, strings.Split(strings.TrimSpace(content), "\n")...)
+	out = append(out, "")
+	out = append(out, lines[end:]...)
+	return strings.Join(out, "\n")
 }
 
 type listArgs struct {

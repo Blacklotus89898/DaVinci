@@ -23,7 +23,7 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	}
 	t.Cleanup(func() { s.Close() })
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	return NewServer(s, logger), s
+	return NewServer(s, logger, ""), s
 }
 
 // exchange sends one JSON-RPC request and returns the decoded response.

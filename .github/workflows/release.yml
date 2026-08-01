@@ -36,11 +36,13 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
+          VERSION="${GITHUB_REF_NAME}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
           mkdir -p dist
-          go build -ldflags="-s -w" \
+          go build -ldflags="${LDFLAGS}" \
             -o dist/knowledge-service-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} \
             ./cmd/knowledge-service
-          go build -ldflags="-s -w" \
+          go build -ldflags="${LDFLAGS}" \
             -o dist/knowledge-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} \
             ./cmd/knowledge
 
@@ -65,8 +67,16 @@ jobs:
           merge-multiple: true
           path: dist/
 
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: |
+            dist/*
+            dist/checksums.txt
           generate_release_notes: true

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,8 +9,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/blacklotus88888/knowledge-service/internal/embed"
 	"github.com/blacklotus88888/knowledge-service/internal/store"
@@ -21,6 +25,7 @@ func main() {
 	flag.Parse()
 
 	dbPath := env("DB_PATH", "knowledge.db")
+	docsPath := env("DOCS_PATH", "")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: logLevel(env("LOG_LEVEL", "info")),
 	}))
@@ -53,7 +58,7 @@ func main() {
 		}
 	}
 
-	srv := mcp.NewServer(db, logger)
+	srv := mcp.NewServer(db, logger, docsPath)
 
 	if *httpAddr != "" {
 		// HTTP mode benefits from concurrent readers; WAL supports multiple connections.
@@ -69,7 +74,7 @@ func main() {
 	}
 }
 
-func runHTTP(srv *mcp.Server, _ *store.Store, logger *slog.Logger, addr string) {
+func runHTTP(srv *mcp.Server, db *store.Store, logger *slog.Logger, addr string) {
 	authToken := env("AUTH_TOKEN", "")
 
 	mux := http.NewServeMux()
@@ -94,22 +99,50 @@ func runHTTP(srv *mcp.Server, _ *store.Store, logger *slog.Logger, addr string) 
 		})
 	})
 
-	// Health / readiness — excluded from auth so load balancers can probe.
+	// Health/readiness: includes a lightweight DB ping so load-balancer probes catch DB issues.
+	// Excluded from auth so probes don't need a token.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		if err := db.DB.QueryRowContext(r.Context(), `SELECT 1`).Scan(new(int)); err != nil {
+			http.Error(w, "db: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		fmt.Fprintln(w, "ok")
 	})
 
 	var handler http.Handler = mux
+	handler = withTimeout(30*time.Second, handler)
 	if authToken != "" {
-		handler = bearerAuth(authToken, mux)
+		handler = bearerAuth(authToken, handler)
 		logger.Info("HTTP auth enabled")
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	httpSrv := &http.Server{Addr: addr, Handler: handler}
+
+	go func() {
+		<-ctx.Done()
+		logger.Info("shutting down HTTP server")
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		httpSrv.Shutdown(shutCtx) //nolint:errcheck
+	}()
+
 	logger.Info("knowledge-service ready (HTTP)", "addr", addr, "schema", addr+"/schema.json")
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("http error", "err", err)
 		os.Exit(1)
 	}
+}
+
+// withTimeout wraps a handler with a per-request context deadline.
+func withTimeout(d time.Duration, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), d)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // bearerAuth wraps a handler requiring "Authorization: Bearer <token>" on all
