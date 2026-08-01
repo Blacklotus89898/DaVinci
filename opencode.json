@@ -1,0 +1,15 @@
+{
+  "mcp": {
+    "knowledge-service": {
+      "type": "local",
+      "command": "~/.local/bin/knowledge-service",
+      "env": {
+        "DB_PATH": "./knowledge.db",
+        "DOCS_PATH": "./docs",
+        "EMBED_PROVIDER": "tfidf",
+        "EMBED_DIMS": "512",
+        "LOG_LEVEL": "warn"
+      }
+    }
+  }
+}

@@ -1,0 +1,502 @@
+package mcp
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"strings"
+
+	"github.com/blacklotus88888/knowledge-service/internal/store"
+)
+
+// supportedVersions lists protocol versions this server can speak, newest first.
+var supportedVersions = []string{"2025-03-26", "2024-11-05"}
+
+// Server implements an MCP (Model Context Protocol) JSON-RPC 2.0 server over stdio.
+type Server struct {
+	store  *store.Store
+	logger *slog.Logger
+}
+
+// NewServer creates a Server.
+func NewServer(s *store.Store, logger *slog.Logger) *Server {
+	return &Server{store: s, logger: logger}
+}
+
+// Run reads JSON-RPC messages from r and writes responses to w until EOF.
+// Used by the stdio transport (Claude Code, OpenCode).
+func (srv *Server) Run(r io.Reader, w io.Writer) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 4<<20), 4<<20) // 4 MB max message
+	enc := json.NewEncoder(w)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var msg rpcMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			srv.logger.Debug("malformed message", "err", err)
+			continue
+		}
+		srv.handle(enc, &msg)
+	}
+	return scanner.Err()
+}
+
+// HandleRequest processes a single JSON-RPC message and writes the response to w.
+// Used by the HTTP transport so any HTTP client can send one-shot requests.
+func (srv *Server) HandleRequest(body []byte, w io.Writer) {
+	enc := json.NewEncoder(w)
+	var msg rpcMessage
+	if err := json.Unmarshal(body, &msg); err != nil {
+		srv.replyErr(enc, nil, -32700, "parse error")
+		return
+	}
+	srv.handle(enc, &msg)
+}
+
+// OpenAITools returns the tool list in OpenAI function-calling format.
+// Any model that uses the OpenAI API (GPT-4o, Gemini with OpenAI compat, local Ollama, etc.)
+// can consume this to call the REST endpoints.
+func OpenAITools() []map[string]any {
+	var out []map[string]any
+	for _, t := range toolsList() {
+		out = append(out, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        t["name"],
+				"description": t["description"],
+				"parameters":  t["inputSchema"],
+			},
+		})
+	}
+	return out
+}
+
+// --- internal types ---
+
+type rpcMessage struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+type rpcResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Result  any             `json:"result,omitempty"`
+	Error   *rpcError       `json:"error,omitempty"`
+}
+
+type rpcError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func (srv *Server) reply(enc *json.Encoder, id json.RawMessage, result any) {
+	_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: id, Result: result})
+}
+
+func (srv *Server) replyErr(enc *json.Encoder, id json.RawMessage, code int, msg string) {
+	_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: code, Message: msg}})
+}
+
+// --- dispatch ---
+
+func (srv *Server) handle(enc *json.Encoder, msg *rpcMessage) {
+	srv.logger.Debug("rpc", "method", msg.Method)
+
+	switch msg.Method {
+	case "initialize":
+		var params struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(msg.Params, &params)
+		version := negotiateVersion(params.ProtocolVersion)
+		srv.reply(enc, msg.ID, map[string]any{
+			"protocolVersion": version,
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"serverInfo":      map[string]any{"name": "knowledge-service", "version": "0.1.0"},
+		})
+
+	case "notifications/initialized", "initialized":
+		// Notifications have no id and expect no response.
+
+	case "tools/list":
+		srv.reply(enc, msg.ID, map[string]any{"tools": toolsList()})
+
+	case "tools/call":
+		srv.handleToolCall(enc, msg)
+
+	case "resources/list":
+		srv.reply(enc, msg.ID, map[string]any{"resources": []any{}})
+
+	case "prompts/list":
+		srv.reply(enc, msg.ID, map[string]any{"prompts": []any{}})
+
+	case "ping":
+		srv.reply(enc, msg.ID, map[string]any{})
+
+	default:
+		if msg.ID != nil {
+			srv.replyErr(enc, msg.ID, -32601, fmt.Sprintf("method not found: %s", msg.Method))
+		}
+	}
+}
+
+// --- tools ---
+
+func toolsList() []map[string]any {
+	return []map[string]any{
+		{
+			"name":        "search_knowledge",
+			"description": "Search the knowledge base for relevant documentation, runbooks, and solutions. Always call this before answering SRE, DevOps, or coding questions.",
+			"inputSchema": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"query": map[string]any{
+						"type":        "string",
+						"description": "Natural language search query",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Max results (default 5, max 20)",
+						"default":     5,
+					},
+				},
+				"required": []string{"query"},
+			},
+		},
+		{
+			"name":        "list_knowledge",
+			"description": "List all documents and section headings in the knowledge base. Use this to discover what runbooks or solutions already exist before writing a new one.",
+			"inputSchema": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"filter": map[string]any{
+						"type":        "string",
+						"description": "Optional path prefix to filter by, e.g. 'solutions/' or 'runbooks/'",
+					},
+				},
+			},
+		},
+		{
+			"name":        "write_knowledge",
+			"description": "Save a new entry to the knowledge base. Call this after solving a non-trivial problem, completing an incident, or discovering something non-obvious so future sessions benefit.",
+			"inputSchema": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Relative path, e.g. runbooks/argocd-oom.md or solutions/cilium-restart.md",
+					},
+					"heading": map[string]any{
+						"type":        "string",
+						"description": "Section heading — used as the search anchor for this chunk",
+					},
+					"content": map[string]any{
+						"type":        "string",
+						"description": "Markdown content: problem description, root cause, fix commands, links",
+					},
+				},
+				"required": []string{"path", "heading", "content"},
+			},
+		},
+		{
+			"name":        "delete_knowledge",
+			"description": "Delete a document from the knowledge base. Use when a runbook is outdated, wrong, or has been superseded.",
+			"inputSchema": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Path of the document to delete (use list_knowledge to find the exact path)",
+					},
+				},
+				"required": []string{"path"},
+			},
+		},
+		{
+			"name":        "get_tool",
+			"description": "Retrieve a stored command, script, or kubectl one-liner by name. Returns the raw executable content (code block) ready to run. Store tools under tools/ with ## headings.",
+			"inputSchema": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Tool name or description, e.g. 'drain node', 'restart argocd', 'check disk pressure'",
+					},
+				},
+				"required": []string{"name"},
+			},
+		},
+	}
+}
+
+type toolCallParams struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+func (srv *Server) handleToolCall(enc *json.Encoder, msg *rpcMessage) {
+	var p toolCallParams
+	if err := json.Unmarshal(msg.Params, &p); err != nil {
+		srv.replyErr(enc, msg.ID, -32602, "invalid params")
+		return
+	}
+
+	switch p.Name {
+	case "search_knowledge":
+		srv.toolSearch(enc, msg.ID, p.Arguments)
+	case "list_knowledge":
+		srv.toolList(enc, msg.ID, p.Arguments)
+	case "write_knowledge":
+		srv.toolWrite(enc, msg.ID, p.Arguments)
+	case "delete_knowledge":
+		srv.toolDelete(enc, msg.ID, p.Arguments)
+	case "get_tool":
+		srv.toolGetTool(enc, msg.ID, p.Arguments)
+	default:
+		srv.replyErr(enc, msg.ID, -32602, fmt.Sprintf("unknown tool: %s", p.Name))
+	}
+}
+
+type searchArgs struct {
+	Query string `json:"query"`
+	Limit int    `json:"limit"`
+}
+
+func (srv *Server) toolSearch(enc *json.Encoder, id json.RawMessage, raw json.RawMessage) {
+	var args searchArgs
+	if err := json.Unmarshal(raw, &args); err != nil || args.Query == "" {
+		srv.replyErr(enc, id, -32602, "query is required")
+		return
+	}
+	if args.Limit <= 0 {
+		args.Limit = 5
+	}
+	if args.Limit > 20 {
+		args.Limit = 20
+	}
+
+	results, err := store.Hybrid(srv.store, args.Query, args.Limit, false)
+	if err != nil {
+		srv.logger.Error("search failed", "err", err)
+		srv.replyErr(enc, id, -32603, "search error")
+		return
+	}
+
+	text := formatResults(results, args.Query)
+	srv.reply(enc, id, map[string]any{
+		"content": []map[string]any{{"type": "text", "text": text}},
+	})
+}
+
+type writeArgs struct {
+	Path    string `json:"path"`
+	Heading string `json:"heading"`
+	Content string `json:"content"`
+}
+
+func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.RawMessage) {
+	var args writeArgs
+	if err := json.Unmarshal(raw, &args); err != nil || args.Path == "" || args.Content == "" {
+		srv.replyErr(enc, id, -32602, "path and content are required")
+		return
+	}
+
+	if err := srv.store.WriteChunk(args.Path, args.Heading, args.Content); err != nil {
+		srv.logger.Error("write failed", "err", err)
+		srv.replyErr(enc, id, -32603, "write error")
+		return
+	}
+	store.InvalidateCache(srv.store)
+
+	srv.reply(enc, id, map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": fmt.Sprintf("Saved to knowledge base: %s / %s", args.Path, args.Heading),
+		}},
+	})
+}
+
+type listArgs struct {
+	Filter string `json:"filter"`
+}
+
+func (srv *Server) toolList(enc *json.Encoder, id json.RawMessage, raw json.RawMessage) {
+	var args listArgs
+	_ = json.Unmarshal(raw, &args)
+
+	docs, err := srv.store.ListDocuments(args.Filter)
+	if err != nil {
+		srv.logger.Error("list failed", "err", err)
+		srv.replyErr(enc, id, -32603, "list error")
+		return
+	}
+
+	var sb strings.Builder
+	if len(docs) == 0 {
+		if args.Filter != "" {
+			fmt.Fprintf(&sb, "No documents matching prefix %q.\n", args.Filter)
+		} else {
+			sb.WriteString("Knowledge base is empty. Use write_knowledge to add runbooks and solutions.\n")
+		}
+	} else {
+		total := 0
+		for _, d := range docs {
+			total += len(d.Headings)
+		}
+		fmt.Fprintf(&sb, "Knowledge base: %d documents, %d chunks\n\n", len(docs), total)
+		for _, d := range docs {
+			fmt.Fprintf(&sb, "%s\n", d.Path)
+			for _, h := range d.Headings {
+				if h != "" {
+					fmt.Fprintf(&sb, "  § %s\n", h)
+				}
+			}
+		}
+	}
+
+	srv.reply(enc, id, map[string]any{
+		"content": []map[string]any{{"type": "text", "text": sb.String()}},
+	})
+}
+
+type deleteArgs struct {
+	Path string `json:"path"`
+}
+
+func (srv *Server) toolDelete(enc *json.Encoder, id json.RawMessage, raw json.RawMessage) {
+	var args deleteArgs
+	if err := json.Unmarshal(raw, &args); err != nil || args.Path == "" {
+		srv.replyErr(enc, id, -32602, "path is required")
+		return
+	}
+
+	n, err := srv.store.DeleteDocument(args.Path)
+	if err != nil {
+		srv.logger.Error("delete failed", "path", args.Path, "err", err)
+		srv.replyErr(enc, id, -32603, err.Error())
+		return
+	}
+
+	srv.reply(enc, id, map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": fmt.Sprintf("Deleted: %s (%d chunks removed)", args.Path, n),
+		}},
+	})
+}
+
+type getToolArgs struct {
+	Name string `json:"name"`
+}
+
+func (srv *Server) toolGetTool(enc *json.Encoder, id json.RawMessage, raw json.RawMessage) {
+	var args getToolArgs
+	if err := json.Unmarshal(raw, &args); err != nil || args.Name == "" {
+		srv.replyErr(enc, id, -32602, "name is required")
+		return
+	}
+
+	results, err := store.Hybrid(srv.store, args.Name, 3, false)
+	if err != nil || len(results) == 0 {
+		srv.reply(enc, id, map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": fmt.Sprintf("No tool found for %q. Store tools under tools/<name>.md with ## headings and ```code blocks```.", args.Name),
+			}},
+		})
+		return
+	}
+
+	best := results[0]
+	code := extractCodeBlock(best.Content)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "## %s\nSource: %s\n\n", best.Heading, best.Path)
+	if code != best.Content {
+		fmt.Fprintf(&sb, "```\n%s\n```", code)
+	} else {
+		sb.WriteString(best.Content)
+	}
+
+	srv.reply(enc, id, map[string]any{
+		"content": []map[string]any{{"type": "text", "text": sb.String()}},
+	})
+}
+
+// extractCodeBlock returns the content of the first fenced code block in s,
+// or s itself if no code block is found.
+func extractCodeBlock(s string) string {
+	lines := strings.Split(s, "\n")
+	var inBlock bool
+	var out []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "```") {
+			if !inBlock {
+				inBlock = true
+				continue // skip the opening ``` line
+			}
+			break // end of block
+		}
+		if inBlock {
+			out = append(out, line)
+		}
+	}
+	if len(out) > 0 {
+		return strings.TrimSpace(strings.Join(out, "\n"))
+	}
+	return s
+}
+
+// negotiateVersion returns the best version the server supports given the
+// client's preferred version. Defaults to the server's oldest stable version.
+func negotiateVersion(clientVersion string) string {
+	for _, v := range supportedVersions {
+		if v == clientVersion {
+			return v
+		}
+	}
+	return supportedVersions[len(supportedVersions)-1]
+}
+
+const maxPreviewChars = 1500
+
+func formatResults(results []store.Result, query string) string {
+	if len(results) == 0 {
+		return fmt.Sprintf(
+			"No results found for: %q\n\nTip: use list_knowledge to see what topics exist, or broaden your query terms.",
+			query,
+		)
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Knowledge base results for %q:\n\n", query)
+	for i, r := range results {
+		fmt.Fprintf(&sb, "--- [%d] %s", i+1, r.Path)
+		if r.Heading != "" {
+			fmt.Fprintf(&sb, " / %s", r.Heading)
+		}
+		fmt.Fprintf(&sb, " (score: %.4f) ---\n", r.Score)
+		preview := r.Content
+		if len(preview) > maxPreviewChars {
+			cut := maxPreviewChars
+			if idx := strings.LastIndexByte(preview[:cut], ' '); idx > cut-60 {
+				cut = idx
+			}
+			preview = preview[:cut] + "\n[...truncated — search with narrower terms for full context]"
+		}
+		fmt.Fprintf(&sb, "%s\n\n", preview)
+	}
+	return sb.String()
+}
