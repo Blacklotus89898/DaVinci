@@ -1,9 +1,13 @@
 package cache
 
-import "container/list"
+import (
+	"container/list"
+	"sync"
+)
 
-// LRU is a generic least-recently-used cache.
+// LRU is a generic least-recently-used cache. All methods are safe for concurrent use.
 type LRU[K comparable, V any] struct {
+	mu    sync.Mutex
 	cap   int
 	items map[K]*list.Element
 	ll    *list.List
@@ -23,6 +27,8 @@ func New[K comparable, V any](cap int) *LRU[K, V] {
 }
 
 func (c *LRU[K, V]) Get(key K) (V, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	el, ok := c.items[key]
 	if !ok {
 		var zero V
@@ -33,6 +39,8 @@ func (c *LRU[K, V]) Get(key K) (V, bool) {
 }
 
 func (c *LRU[K, V]) Set(key K, val V) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if el, ok := c.items[key]; ok {
 		c.ll.MoveToFront(el)
 		el.Value.(*entry[K, V]).val = val
@@ -50,6 +58,8 @@ func (c *LRU[K, V]) Set(key K, val V) {
 }
 
 func (c *LRU[K, V]) Purge() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.items = make(map[K]*list.Element, c.cap)
 	c.ll.Init()
 }

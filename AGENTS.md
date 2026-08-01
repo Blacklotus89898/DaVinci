@@ -6,9 +6,9 @@
 |---|---|
 | `list_knowledge` | Start of any SRE/DevOps task — discover what runbooks already exist |
 | `search_knowledge` | Before answering any non-trivial question |
-| `write_knowledge` | After solving a problem, resolving an incident, or finding something non-obvious |
+| `write_knowledge` | After solving a problem, resolving an incident, or finding something non-obvious. **heading is required** — without it the write is rejected. |
 | `delete_knowledge` | When a runbook is outdated, wrong, or superseded |
-| `get_tool` | Retrieve a stored script/one-liner by name for immediate execution |
+| `get_tool` | Retrieve a stored script/one-liner by name. Searches `tools/` prefix only — won't return runbooks or docs. |
 
 ### Search Tips
 

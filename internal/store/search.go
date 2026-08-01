@@ -110,7 +110,7 @@ func vectorSearch(s *Store, query string, limit int) ([]Result, error) {
 		}
 		qvec = v
 	} else {
-		idfDefault := embed.SmoothedIDF(100, 0)
+		idfDefault := embed.SmoothedIDF(len(idf)+10, 0)
 		tokens := embed.Tokenize(query)
 		tf := embed.TermFreq(tokens)
 		if tf == nil {
@@ -183,18 +183,28 @@ func rrfMerge(fts, vec []Result, limit int) []Result {
 }
 
 // buildFTSQuery returns AND and OR forms of an FTS5 MATCH expression with prefix tokens.
+// The AND query uses raw tokens only (no SRE synonym expansion) so that injected synonym
+// tokens like "oom*" don't break AND recall for compound FTS5 tokens like "oomkilled".
+// The OR query uses the full expanded token set for broader recall.
 // Single-token queries return the same string for both.
 func buildFTSQuery(query string) (andQuery, orQuery string) {
-	tokens := embed.Tokenize(query)
-	if len(tokens) == 0 {
+	rawTokens := embed.TokenizeRaw(query)
+	if len(rawTokens) == 0 {
 		return "", ""
 	}
-	parts := make([]string, len(tokens))
-	for i, t := range tokens {
-		parts[i] = t + "*"
+	andParts := make([]string, len(rawTokens))
+	for i, t := range rawTokens {
+		andParts[i] = t + "*"
 	}
-	if len(parts) == 1 {
-		return parts[0], parts[0]
+
+	allTokens := embed.Tokenize(query)
+	orParts := make([]string, len(allTokens))
+	for i, t := range allTokens {
+		orParts[i] = t + "*"
 	}
-	return strings.Join(parts, " AND "), strings.Join(parts, " OR ")
+
+	if len(andParts) == 1 && len(orParts) == 1 {
+		return andParts[0], orParts[0]
+	}
+	return strings.Join(andParts, " AND "), strings.Join(orParts, " OR ")
 }

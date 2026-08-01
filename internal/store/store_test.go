@@ -314,6 +314,29 @@ func TestFTSPrefixMatch(t *testing.T) {
 	}
 }
 
+func TestBuildFTSQuerySynonymSafety(t *testing.T) {
+	// AND query must use raw tokens only — no SRE synonym expansion.
+	// "OOMKilled" should produce AND query with "oomkilled*" only, not "oom*".
+	// If "oom*" were injected into the AND query it would fail recall for docs
+	// that only write "OOMKilled" (FTS5 treats it as one token, not two).
+	andQ, orQ := buildFTSQuery("OOMKilled")
+	if andQ != "oomkilled*" {
+		t.Errorf("AND query = %q; want 'oomkilled*' (no synonym injection)", andQ)
+	}
+	// OR query may include expansion tokens for broader recall.
+	if orQ == andQ {
+		// single raw token → same string is fine, but oom* could be added
+		// this is acceptable either way
+	}
+
+	// Multi-token: AND must not include synonym-only tokens.
+	andQ2, _ := buildFTSQuery("OOMKilled pod")
+	if strings.Contains(andQ2, "oom*") && strings.Contains(andQ2, "AND") {
+		// "oom*" in an AND expression next to "oomkilled*" would break recall
+		t.Errorf("AND query %q contains synonym token 'oom*' which breaks AND recall", andQ2)
+	}
+}
+
 // --- Benchmarks ---
 
 func BenchmarkIngest(b *testing.B) {

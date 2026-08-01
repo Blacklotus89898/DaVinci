@@ -50,6 +50,23 @@ func makeStops() map[string]bool {
 	return m
 }
 
+// TokenizeRaw lowercases, strips non-alphanumeric, and removes stopwords and single-char
+// tokens, but does NOT expand SRE synonyms. Use this for FTS5 AND-query building where
+// synonym tokens injected into an AND expression break recall for compound words.
+func TokenizeRaw(text string) []string {
+	text = strings.ToLower(text)
+	text = nonAlpha.ReplaceAllString(text, " ")
+	words := strings.Fields(text)
+	out := make([]string, 0, len(words))
+	for _, w := range words {
+		if len(w) <= 1 || stops[w] {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
 // Tokenize lowercases, strips non-alphanumeric, removes stopwords and single-char tokens,
 // then expands SRE synonym pairs (once per unique source token per call).
 func Tokenize(text string) []string {
@@ -98,6 +115,9 @@ func SmoothedIDF(N, df int) float64 {
 // Vectorize produces a dims-dimensional TF-IDF vector using the hashing trick.
 // Terms absent from idf use idfDefault. The returned slice is L2-normalised.
 func Vectorize(tf map[string]float64, idf map[string]float64, idfDefault float64, dims int) []float32 {
+	if dims <= 0 {
+		return nil
+	}
 	vec := make([]float32, dims)
 	for term, tfVal := range tf {
 		idfVal, ok := idf[term]

@@ -152,6 +152,32 @@ func TestFromBytesEmpty(t *testing.T) {
 	}
 }
 
+func TestTokenizeRaw(t *testing.T) {
+	// TokenizeRaw must NOT expand SRE synonyms.
+	got := TokenizeRaw("OOMKilled CrashLoopBackOff")
+	found := map[string]bool{}
+	for _, tok := range got {
+		found[tok] = true
+	}
+	if found["oom"] || found["crashloop"] {
+		t.Errorf("TokenizeRaw should not expand synonyms; got %v", got)
+	}
+	if !found["oomkilled"] || !found["crashloopbackoff"] {
+		t.Errorf("TokenizeRaw should keep base tokens; got %v", got)
+	}
+}
+
+func TestVectorizeDimsGuard(t *testing.T) {
+	tf := map[string]float64{"foo": 1.0}
+	idf := map[string]float64{"foo": 2.0}
+	if v := Vectorize(tf, idf, 1.0, 0); v != nil {
+		t.Errorf("Vectorize with dims=0 should return nil, got %v", v)
+	}
+	if v := Vectorize(tf, idf, 1.0, -1); v != nil {
+		t.Errorf("Vectorize with dims=-1 should return nil, got %v", v)
+	}
+}
+
 func TestSmoothedIDF(t *testing.T) {
 	idf := SmoothedIDF(10, 10)
 	if idf <= 0 {

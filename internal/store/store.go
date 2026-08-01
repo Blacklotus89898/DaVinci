@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/blacklotus88888/knowledge-service/internal/cache"
@@ -50,6 +51,7 @@ const schema = `
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 PRAGMA synchronous=NORMAL;
+PRAGMA busy_timeout=5000;
 
 CREATE TABLE IF NOT EXISTS documents (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,7 +110,20 @@ func (s *Store) Close() error { return s.DB.Close() }
 
 // SetProvider sets an optional neural embedding backend (e.g. Ollama).
 // Must be called before any ingest or search. Pass nil to use TF-IDF.
-func (s *Store) SetProvider(p embed.Provider) { s.provider = p }
+// If the store already contains vectors from a different provider dimension,
+// run `make ingest` to re-vectorize the entire corpus before searching.
+func (s *Store) SetProvider(p embed.Provider) {
+	if p != nil && len(s.vecs) > 0 {
+		// Warn if existing in-memory vectors have a different dimension — they will
+		// score 0 against the new provider's query vectors until re-ingest is run.
+		if len(s.vecs) > 0 && len(s.vecs[0].Vec) != p.Dims() {
+			fmt.Fprintf(os.Stderr,
+				"warning: existing corpus uses %d-dim vectors but new provider uses %d-dim — run `make ingest` to re-vectorize\n",
+				len(s.vecs[0].Vec), p.Dims())
+		}
+	}
+	s.provider = p
+}
 
 // SetTFIDFDims overrides the TF-IDF vector dimension (default: embed.DefaultDims).
 // Only takes effect when no Provider is set.
@@ -173,22 +188,27 @@ func (s *Store) reloadIDF() {
 }
 
 // rebuildVocabAndVectors recomputes IDF over all chunks, updates the vocab table,
-// and re-vectorizes every chunk so vectors stay consistent with the current corpus.
-// In Ollama mode the vocab step is skipped; only vectors are refreshed.
+// and re-vectorizes chunks whose stored vector is outdated or missing.
+//
+// TF-IDF mode: re-embeds ALL chunks because IDF changes globally with every write.
+// Ollama mode: skips the vocab step and only embeds chunks with a NULL vector blob,
+// since Ollama embeddings are corpus-independent (no IDF recalculation needed).
 func (s *Store) rebuildVocabAndVectors() {
 	type chunkRow struct {
-		id      int64
-		heading string
-		content string
+		id         int64
+		heading    string
+		content    string
+		hasVector  bool
 	}
-	rows, err := s.DB.Query(`SELECT id, heading, content FROM chunks`)
+
+	rows, err := s.DB.Query(`SELECT id, heading, content, (vector IS NOT NULL) FROM chunks`)
 	if err != nil {
 		return
 	}
 	var all []chunkRow
 	for rows.Next() {
 		var c chunkRow
-		if err := rows.Scan(&c.id, &c.heading, &c.content); err == nil {
+		if err := rows.Scan(&c.id, &c.heading, &c.content, &c.hasVector); err == nil {
 			all = append(all, c)
 		}
 	}
@@ -233,22 +253,35 @@ func (s *Store) rebuildVocabAndVectors() {
 			tx.Rollback() //nolint:errcheck
 			return
 		}
+		var execErr error
 		for term, d := range df {
-			stmt.Exec(term, d, idf[term]) //nolint:errcheck
+			if _, err := stmt.Exec(term, d, idf[term]); err != nil {
+				execErr = err
+				break
+			}
 		}
 		stmt.Close()
+		if execErr != nil {
+			tx.Rollback() //nolint:errcheck
+			return
+		}
 		if err := tx.Commit(); err != nil {
 			return
 		}
 	}
 
-	// Re-vectorize every chunk with the fresh IDF (or provider).
+	// Re-vectorize chunks. In Ollama mode, only process chunks missing a vector
+	// (embeddings are corpus-independent so existing vectors remain valid).
+	// In TF-IDF mode, re-embed all chunks since IDF changed globally.
 	vstmt, err := s.DB.Prepare(`UPDATE chunks SET vector=? WHERE id=?`)
 	if err != nil {
 		return
 	}
 	defer vstmt.Close()
 	for _, c := range all {
+		if s.provider != nil && c.hasVector {
+			continue // Ollama: skip already-embedded chunks
+		}
 		v := s.vectorizeChunk(c.heading, c.content, idf, idfDefault)
 		if v == nil {
 			continue
@@ -263,11 +296,11 @@ func (s *Store) rebuildVocabAndVectors() {
 }
 
 // LoadVecs ensures the in-memory vector cache is populated. Idempotent.
+// The write lock is held for the duration to prevent duplicate DB loads under concurrent searches.
 func (s *Store) LoadVecs() error {
-	s.mu.RLock()
-	loaded := s.vecs != nil
-	s.mu.RUnlock()
-	if loaded {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vecs != nil {
 		return nil
 	}
 
@@ -300,9 +333,7 @@ func (s *Store) LoadVecs() error {
 		return err
 	}
 
-	s.mu.Lock()
 	s.vecs = vecs
-	s.mu.Unlock()
 	return nil
 }
 
@@ -392,15 +423,8 @@ func (s *Store) DeleteDocument(path string) (int, error) {
 // WriteChunk saves a knowledge chunk under path/heading.
 // Upsert semantics: if a chunk with the same non-empty heading already exists
 // under this path it is updated in place; otherwise a new chunk is appended.
-// After the write, IDF and all vectors are rebuilt (TF-IDF mode only).
+// After the write, IDF and vectors are rebuilt (rebuildVocabAndVectors handles embedding).
 func (s *Store) WriteChunk(path, heading, content string) error {
-	s.mu.RLock()
-	idf := s.idf
-	s.mu.RUnlock()
-	idfDefault := embed.SmoothedIDF(idfLen(idf)+10, 0)
-	v := s.vectorizeChunk(heading, content, idf, idfDefault)
-	blob := embed.ToBytes(v)
-
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
@@ -426,7 +450,8 @@ func (s *Store) WriteChunk(path, heading, content string) error {
 		var existingID int64
 		err := tx.QueryRow(`SELECT id FROM chunks WHERE doc_id=? AND heading=?`, docID, heading).Scan(&existingID)
 		if err == nil {
-			if _, err := tx.Exec(`UPDATE chunks SET content=?, vector=? WHERE id=?`, content, blob, existingID); err != nil {
+			// Clear the vector so rebuildVocabAndVectors re-embeds this chunk.
+			if _, err := tx.Exec(`UPDATE chunks SET content=?, vector=NULL WHERE id=?`, content, existingID); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(`DELETE FROM chunks_fts WHERE rowid=?`, existingID); err != nil {
@@ -450,8 +475,8 @@ func (s *Store) WriteChunk(path, heading, content string) error {
 			chunkIdx = int(maxIdx.Int64) + 1
 		}
 		res, err := tx.Exec(
-			`INSERT INTO chunks(doc_id, chunk_idx, heading, content, vector) VALUES(?,?,?,?,?)`,
-			docID, chunkIdx, heading, content, blob,
+			`INSERT INTO chunks(doc_id, chunk_idx, heading, content, vector) VALUES(?,?,?,?,NULL)`,
+			docID, chunkIdx, heading, content,
 		)
 		if err != nil {
 			return err
@@ -465,7 +490,8 @@ func (s *Store) WriteChunk(path, heading, content string) error {
 		}
 	}
 
-	// Rebuild IDF and re-vectorize all chunks (TF-IDF only; Ollama embeddings are independent).
+	// Rebuild IDF and re-vectorize. In Ollama mode only the new NULL-vector chunk is embedded;
+	// in TF-IDF mode all chunks are re-embedded with the updated IDF.
 	s.rebuildVocabAndVectors()
 	s.lru.Purge()
 	return nil

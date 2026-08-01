@@ -49,11 +49,11 @@ Copy `opencode.json` to your workspace root and restart OpenCode. Edit the paths
 
 | Tool | What it does |
 |---|---|
-| `search_knowledge` | Hybrid BM25 + TF-IDF search. Call this before answering any SRE/DevOps question. |
+| `search_knowledge` | Hybrid BM25 + Ollama semantic search. Call this before answering any SRE/DevOps question. |
 | `list_knowledge` | List all documents and headings. Use to discover what exists before writing. |
-| `write_knowledge` | Save a new chunk (path, heading, content). Call this after solving any non-trivial problem. |
+| `write_knowledge` | Save a new chunk (path, **heading required**, content). Call this after solving any non-trivial problem. |
 | `delete_knowledge` | Remove an outdated or superseded document by path. |
-| `get_tool` | Retrieve a stored script or one-liner by description, returning raw executable code. |
+| `get_tool` | Retrieve a stored script or one-liner by name. Searches `tools/` prefix only; returns raw executable code. |
 
 ## Architecture
 

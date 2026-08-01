@@ -310,8 +310,8 @@ type writeArgs struct {
 
 func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.RawMessage) {
 	var args writeArgs
-	if err := json.Unmarshal(raw, &args); err != nil || args.Path == "" || args.Content == "" {
-		srv.replyErr(enc, id, -32602, "path and content are required")
+	if err := json.Unmarshal(raw, &args); err != nil || args.Path == "" || args.Heading == "" || args.Content == "" {
+		srv.replyErr(enc, id, -32602, "path, heading, and content are all required")
 		return
 	}
 
@@ -320,7 +320,7 @@ func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.Raw
 		srv.replyErr(enc, id, -32603, "write error")
 		return
 	}
-	store.InvalidateCache(srv.store)
+	// WriteChunk already purges the LRU cache; no additional invalidation needed.
 
 	srv.reply(enc, id, map[string]any{
 		"content": []map[string]any{{
@@ -410,8 +410,22 @@ func (srv *Server) toolGetTool(enc *json.Encoder, id json.RawMessage, raw json.R
 		return
 	}
 
-	results, err := store.Hybrid(srv.store, args.Name, 3, false)
-	if err != nil || len(results) == 0 {
+	// Search with a wider limit so we have enough candidates after filtering to tools/.
+	candidates, err := store.Hybrid(srv.store, args.Name, 10, false)
+	if err != nil {
+		srv.replyErr(enc, id, -32603, "search error")
+		return
+	}
+
+	// Only return results stored under tools/ — other paths are runbooks/docs, not tools.
+	var results []store.Result
+	for _, r := range candidates {
+		if strings.HasPrefix(r.Path, "tools/") {
+			results = append(results, r)
+		}
+	}
+
+	if len(results) == 0 {
 		srv.reply(enc, id, map[string]any{
 			"content": []map[string]any{{
 				"type": "text",

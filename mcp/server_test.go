@@ -333,6 +333,55 @@ func TestPromptsList(t *testing.T) {
 	}
 }
 
+func TestToolCallWriteEmptyHeading(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// heading is empty string — must be rejected server-side.
+	resp := exchange(t, srv, `{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"write_knowledge","arguments":{"path":"test/x.md","heading":"","content":"some content"}}}`)
+	if _, hasErr := resp["error"]; !hasErr {
+		t.Errorf("expected error for empty heading, got result: %v", resp)
+	}
+}
+
+func TestGetToolFiltersToToolsPath(t *testing.T) {
+	srv, s := newTestServer(t)
+
+	// Write a runbook (not a tool) — should NOT be returned by get_tool.
+	if err := s.WriteChunk("runbooks/drain-runbook.md", "Drain Node Runbook", "Use kubectl drain to evict pods."); err != nil {
+		t.Fatalf("WriteChunk runbook: %v", err)
+	}
+	// Write an actual tool under tools/ — should be returned.
+	if err := s.WriteChunk("tools/drain-node.md", "Drain Node Tool", "```bash\nkubectl drain <node> --ignore-daemonsets\n```"); err != nil {
+		t.Fatalf("WriteChunk tool: %v", err)
+	}
+
+	resp := exchange(t, srv, `{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"get_tool","arguments":{"name":"drain node"}}}`)
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected result: %v", resp)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	// Must come from tools/, not the runbook.
+	if strings.Contains(text, "runbooks/") {
+		t.Errorf("get_tool returned a runbook path; should only return tools/: %q", text)
+	}
+	if !strings.Contains(text, "kubectl drain") {
+		t.Errorf("expected kubectl drain command in tool result, got: %q", text)
+	}
+}
+
+func TestGetToolEmptyKB(t *testing.T) {
+	srv, _ := newTestServer(t)
+	resp := exchange(t, srv, `{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"get_tool","arguments":{"name":"anything"}}}`)
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected result: %v", resp)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "No tool found") {
+		t.Errorf("expected 'No tool found' for empty KB, got: %q", text)
+	}
+}
+
 func TestNegotiateVersion(t *testing.T) {
 	cases := []struct {
 		client string

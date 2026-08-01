@@ -26,7 +26,9 @@ get_tool(name: "drain node")
 → kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
 ```
 
-> **Note**: `get_tool` accepts a `name` parameter (not `query`). Pass the heading or a close match — it runs a hybrid search scoped to `tools/` paths.
+> **Note**: `get_tool` accepts a `name` parameter (not `query`). Pass the heading or a close match.
+> It runs a hybrid search **scoped to `tools/` paths only** — runbooks and docs stored under other prefixes are excluded.
+> If no `tools/` result matches, it returns a "No tool found" message rather than falling back to unrelated content.
 
 ## Tool vs. Runbook
 
