@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/blacklotus88888/knowledge-service/internal/embed"
 	"github.com/blacklotus88888/knowledge-service/internal/store"
 )
 
@@ -22,6 +23,8 @@ func main() {
 	}
 	defer db.Close()
 
+	applyEmbedConfig(db)
+
 	switch os.Args[1] {
 	case "ingest":
 		doIngest(db)
@@ -30,6 +33,26 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		usage()
+	}
+}
+
+// applyEmbedConfig mirrors the provider/dims setup from the server binary.
+func applyEmbedConfig(db *store.Store) {
+	if dimsStr := getenv("EMBED_DIMS", ""); dimsStr != "" {
+		if n, err := strconv.Atoi(dimsStr); err == nil && n > 0 {
+			db.SetTFIDFDims(n)
+		}
+	}
+	if strings.ToLower(getenv("EMBED_PROVIDER", "")) == "ollama" {
+		url := getenv("EMBED_URL", "http://localhost:11434")
+		model := getenv("EMBED_MODEL", "nomic-embed-text")
+		p, err := embed.NewOllamaProvider(url, model)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: ollama unavailable (%v), falling back to TF-IDF\n", err)
+			return
+		}
+		db.SetProvider(p)
+		fmt.Printf("embedding: ollama/%s (%d dims)\n", model, p.Dims())
 	}
 }
 
@@ -51,7 +74,6 @@ func doSearch(db *store.Store) {
 	}
 	query := strings.Join(os.Args[2:], " ")
 	limit := 5
-	// If the last arg is a pure integer, treat it as the limit.
 	if last := os.Args[len(os.Args)-1]; len(os.Args) > 3 {
 		if n, err := strconv.Atoi(last); err == nil {
 			limit = n

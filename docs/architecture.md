@@ -45,14 +45,14 @@ graph TD
 
 ```mermaid
 flowchart LR
-    Q[query] --> TOK[tokenize<br/>stopwords removed]
-    TOK --> FTS5[FTS5 MATCH<br/>token* OR token*]
-    TOK --> TFIDF[TF-IDF vectorize<br/>hashing trick 512-dim]
+    Q[query] --> TOK[tokenize + SRE synonyms]
+    TOK --> FTS5["FTS5 MATCH<br/>AND-first · OR fallback"]
+    TOK --> EMB["Ollama nomic-embed-text<br/>768-dim · falls back to TF-IDF 1024-dim"]
     FTS5 -->|BM25 ranked list| RRF
-    TFIDF -->|cosine sim ranked list| RRF
-    RRF[Reciprocal Rank Fusion<br/>FTS weight 4× · vec weight 0.5× · k=60]
+    EMB -->|cosine sim ranked list| RRF
+    RRF["Reciprocal Rank Fusion<br/>FTS weight 4× · vec weight 0.5× · k=60"]
     RRF --> TOP[top-k results]
-    TOP --> CACHE[LRU cache<br/>key = query + limit]
+    TOP --> CACHE["LRU cache<br/>key = query + limit"]
 ```
 
 ## Self-Improvement Loop

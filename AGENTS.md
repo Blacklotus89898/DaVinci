@@ -15,9 +15,10 @@
 - Use **concrete SRE terms**: service names, error messages, exit codes, kubectl commands
 - Try the exact error string first (`OOMKilled`, `CrashLoopBackOff`, `no space left on device`)
 - If nothing returns, broaden: `search_knowledge("oom memory")` instead of `"OOMKilled"`
-- The search uses FTS5 BM25 keyword matching + TF-IDF vectors merged via RRF — exact terms
-  score highest; related-vocabulary terms score slightly lower via the vector channel
+- The search uses FTS5 BM25 (keyword) + Ollama `nomic-embed-text` semantic vectors merged via RRF
+- Exact terms score highest via BM25; paraphrases and synonyms are caught by the semantic channel
 - Prefix matching is on: `kube` hits `kubernetes`, `argo` hits `argocd`
+- SRE synonym expansion: `OOMKilled` → also matches `oom`; `CrashLoopBackOff` → `crashloop`; `eviction/drain` → `evict`
 
 ## Workflow
 

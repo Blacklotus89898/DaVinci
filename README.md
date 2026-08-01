@@ -6,7 +6,7 @@ Write runbooks, solutions, and one-liners into it from conversations; future ses
 ## What it does
 
 - **Stores** markdown chunks (runbooks, solutions, tools, guides) in a single SQLite file
-- **Searches** them using hybrid BM25 full-text + TF-IDF vector retrieval, merged via Reciprocal Rank Fusion
+- **Searches** them using hybrid BM25 full-text + Ollama semantic vector retrieval, merged via Reciprocal Rank Fusion
 - **Exposes** 5 tools over [Model Context Protocol](https://modelcontextprotocol.io/) (stdio) or HTTP (for non-MCP clients)
 - **Self-improves**: after every debugging session the agent writes what it learned back into the knowledge base, making every future session smarter
 
@@ -30,23 +30,16 @@ make install
 
 ## Wiring into Claude Code
 
-Add to `~/.claude/settings.local.json` (or your project's `.claude/settings.local.json`):
-
-```json
-{
-  "mcpServers": {
-    "knowledge": {
-      "command": "/path/to/knowledge-service",
-      "env": {
-        "DB_PATH": "/path/to/knowledge.db",
-        "LOG_LEVEL": "warn"
-      }
-    }
-  }
-}
+```bash
+claude mcp add knowledge /path/to/knowledge-service \
+  -e DB_PATH=/path/to/knowledge.db \
+  -e EMBED_PROVIDER=ollama \
+  -e EMBED_MODEL=nomic-embed-text \
+  -e LOG_LEVEL=warn \
+  --scope user
 ```
 
-Restart Claude Code. The `search_knowledge`, `list_knowledge`, `write_knowledge`, `delete_knowledge`, and `get_tool` tools will be available in every session.
+The `search_knowledge`, `list_knowledge`, `write_knowledge`, `delete_knowledge`, and `get_tool` tools are then available in every Claude Code session. No restart needed — takes effect immediately.
 
 ## Wiring into OpenCode
 
@@ -66,8 +59,8 @@ Copy `opencode.json` to your workspace root and restart OpenCode. Edit the paths
 
 ```
 Query
-  ├─ FTS5 MATCH "token1* OR token2*"  →  BM25 ranked list
-  └─ TF-IDF hashing trick (1024-dim)  →  cosine sim ranked list
+  ├─ FTS5 MATCH "token1* AND token2*" (OR fallback)  →  BM25 ranked list
+  └─ Ollama nomic-embed-text (768-dim)               →  cosine sim ranked list
          ↓
   Reciprocal Rank Fusion (FTS weight 4×, vec weight 0.5×, k=60)
          ↓
@@ -78,9 +71,9 @@ Query
 
 **Storage**: SQLite WAL mode — `documents`, `chunks` (with vector blob), `chunks_fts` (FTS5 virtual table), `vocab` (IDF values). Single portable `.db` file.
 
-**Embedding (default)**: TF-IDF with feature hashing — no API, no model weights, offline. 1024-dim vectors with heading-boost (3×) and SRE synonym expansion (`OOMKilled ↔ oom`, `CrashLoopBackOff ↔ crashloop`, etc.). IDF is recomputed over the full corpus after every write.
+**Embedding (active)**: Ollama `nomic-embed-text` — 768-dim dense semantic vectors via local Ollama. Catches paraphrases and intent that keyword search misses. Requires `ollama pull nomic-embed-text` and `EMBED_PROVIDER=ollama`.
 
-**Embedding (optional)**: Set `EMBED_PROVIDER=ollama` to use a local Ollama model (`nomic-embed-text` recommended) for true semantic search. Re-run `make ingest` after switching providers.
+**Embedding (fallback)**: TF-IDF with feature hashing — 1024-dim, offline, zero deps. Heading-boost (3×) and SRE synonym expansion (`OOMKilled ↔ oom`, `CrashLoopBackOff ↔ crashloop`, etc.). Used automatically if Ollama is unavailable.
 
 See [docs/architecture.md](docs/architecture.md) for diagrams, embedding details, and known limitations.
 
@@ -165,7 +158,7 @@ go test -race ./...
 
 - **Linear vector scan**: all chunk vectors are loaded into RAM and scanned per query. Fine under ~5,000 chunks; an ANN index would be needed beyond that.
 - **No metadata filtering**: `search_knowledge` searches all paths; use `list_knowledge("runbooks/")` to scope discovery first.
-- **Paraphrases in TF-IDF mode**: `"disk full"` and `"no space left on device"` won't match each other. Switch to Ollama mode or write runbooks using both forms.
+- **Paraphrases in TF-IDF mode**: `"disk full"` and `"no space left on device"` won't match each other without Ollama. Use `EMBED_PROVIDER=ollama` (recommended) or write runbooks with both forms.
 - **Provider switch requires re-ingest**: run `make ingest` after changing `EMBED_PROVIDER` so all stored vectors use the new embedding.
 
 ## License

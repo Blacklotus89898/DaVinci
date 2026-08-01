@@ -22,9 +22,11 @@ Use `write_knowledge` with a path under `tools/`:
 The agent (or you) can then retrieve it:
 
 ```
-get_tool("drain node")
+get_tool(name: "drain node")
 → kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
 ```
+
+> **Note**: `get_tool` accepts a `name` parameter (not `query`). Pass the heading or a close match — it runs a hybrid search scoped to `tools/` paths.
 
 ## Tool vs. Runbook
 
