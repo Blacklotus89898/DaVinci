@@ -1,0 +1,46 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Summary
+        if: always()
+        run: |
+          CREATED="${{ steps.release.outputs.release_created }}"
+          TAG="${{ steps.release.outputs.tag_name }}"
+          {
+            echo "## 📦 Release Please"
+            echo ""
+            if [ "$CREATED" = "true" ]; then
+              echo "✅ **Release created:** \`${TAG}\` — release build workflow triggered"
+            else
+              echo "🔄 **Release PR opened or updated** — merge it to cut a release and trigger the build"
+            fi
+            echo ""
+            echo "### Conventional Commit Reference"
+            echo ""
+            echo "| Commit prefix | Version bump | CHANGELOG section |"
+            echo "|---------------|-------------|-------------------|"
+            echo "| \`feat:\` | Minor (0.x → 0.x+1) | Features |"
+            echo "| \`fix:\` | Patch (0.x.y → 0.x.y+1) | Bug Fixes |"
+            echo "| \`feat!:\` or \`BREAKING CHANGE:\` in footer | Major (x → x+1) | ⚠ Breaking Changes |"
+            echo "| \`chore:\`, \`docs:\`, \`refactor:\`, \`test:\` | None | — |"
+            echo ""
+            echo "> Release Please reads commits on \`main\` since the last release tag and manages \`CHANGELOG.md\` automatically."
+          } >> "$GITHUB_STEP_SUMMARY"

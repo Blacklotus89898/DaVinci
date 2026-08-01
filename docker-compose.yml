@@ -1,5 +1,8 @@
 services:
   knowledge-service:
+    # Pull the published image from GHCR. To build from source instead:
+    #   docker compose up --build
+    image: ghcr.io/blacklotus88888/knowledge-service:latest
     build: .
     restart: unless-stopped
     ports:
