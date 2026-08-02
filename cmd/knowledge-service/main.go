@@ -147,7 +147,7 @@ func runHTTP(srv *mcp.Server, db *store.Store, logger *slog.Logger, addr string)
 		logger.Info("shutting down HTTP server")
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		httpSrv.Shutdown(shutCtx) //nolint:errcheck
+		_ = httpSrv.Shutdown(shutCtx)
 	}()
 
 	logger.Info("knowledge-service ready (HTTP)", "addr", addr, "schema", addr+"/schema.json")
