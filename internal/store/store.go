@@ -231,7 +231,7 @@ func (s *Store) rebuildVocabAndVectors() {
 			all = append(all, c)
 		}
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	N := len(all)
 	if N == 0 {
@@ -264,12 +264,12 @@ func (s *Store) rebuildVocabAndVectors() {
 			return
 		}
 		if _, err := tx.Exec(`DELETE FROM vocab`); err != nil {
-			tx.Rollback() //nolint:errcheck
+			_ = tx.Rollback()
 			return
 		}
 		stmt, err := tx.Prepare(`INSERT INTO vocab(term, df, idf) VALUES(?,?,?)`)
 		if err != nil {
-			tx.Rollback() //nolint:errcheck
+			_ = tx.Rollback()
 			return
 		}
 		var execErr error
@@ -281,7 +281,7 @@ func (s *Store) rebuildVocabAndVectors() {
 		}
 		stmt.Close()
 		if execErr != nil {
-			tx.Rollback() //nolint:errcheck
+			_ = tx.Rollback()
 			return
 		}
 		if err := tx.Commit(); err != nil {
