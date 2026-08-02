@@ -382,7 +382,7 @@ Kubernetes ArgoCD pod deployment sync failed OOM disk pressure Cilium eBPF netwo
 
 func BenchmarkHybridWarm(b *testing.B) {
 	s, _ := Open(filepath.Join(b.TempDir(), "bench.db"))
-	defer s.Close()
+	defer s.Close() //nolint:errcheck
 	dir := b.TempDir()
 	md := `# Doc
 ## Section

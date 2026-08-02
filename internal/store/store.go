@@ -96,7 +96,7 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
@@ -106,11 +106,11 @@ func Open(path string) (*Store, error) {
 	switch {
 	case ver == 0:
 		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, fmt.Errorf("set schema version: %w", err)
 		}
 	case ver > currentSchemaVersion:
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("database schema version %d is newer than this binary supports (%d) — upgrade knowledge-service", ver, currentSchemaVersion)
 	}
 	// ver == currentSchemaVersion: already up to date. Future migrations go here.

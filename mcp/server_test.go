@@ -21,7 +21,7 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	return NewServer(s, logger, ""), s
 }
@@ -388,7 +388,7 @@ func TestToolCallWriteWithDocsPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	srv := NewServer(s, logger, docsDir)
 
@@ -421,7 +421,7 @@ func TestToolCallWriteWithDocsPath(t *testing.T) {
 	if _, ok := resp["result"].(map[string]any); !ok {
 		t.Fatalf("second write failed: %v", resp)
 	}
-	data2, _ := os.ReadFile(mdPath)
+	data2, _ := os.ReadFile(mdPath) //nolint:gosec
 	if !strings.Contains(string(data2), "Updated:") {
 		t.Errorf("second write should update the section; got:\n%s", data2)
 	}
