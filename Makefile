@@ -4,7 +4,7 @@ CLI      := $(BINDIR)/knowledge
 DB_PATH  ?= knowledge.db
 DOCS_PATH ?= docs
 
-.PHONY: build install ingest clean tidy
+.PHONY: build install ingest clean tidy lint test
 
 build: $(SERVICE) $(CLI)
 
@@ -33,3 +33,9 @@ clean:
 
 tidy:
 	go mod tidy
+
+lint:
+	golangci-lint run ./...
+
+test:
+	go test -race ./...
