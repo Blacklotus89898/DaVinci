@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.2.3](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.2...knowledge-service-v0.2.3) (2026-08-02)
+
+
+### Bug Fixes
+
+* gosec G104 on httpSrv.Shutdown in HTTP server ([9779928](https://github.com/Blacklotus89898/DaVinci/commit/9779928dcb910e42f5db1e7b6f9bd58186099c5a))
+* gosec G104 on stmt.Close, vstmt.Exec, rows.Close, tx.Rollback ([6aaee88](https://github.com/Blacklotus89898/DaVinci/commit/6aaee883de336d98aa9f127fe98cbe4de0d50df6))
+
 ## [0.2.2](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.1...knowledge-service-v0.2.2) (2026-08-02)
 
 
