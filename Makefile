@@ -3,6 +3,7 @@ SERVICE  := $(BINDIR)/knowledge-service
 CLI      := $(BINDIR)/knowledge
 DB_PATH  ?= knowledge.db
 DOCS_PATH ?= docs
+VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 .PHONY: build install ingest clean tidy lint test
 
@@ -10,11 +11,11 @@ build: $(SERVICE) $(CLI)
 
 $(SERVICE): go.sum $(shell find cmd/knowledge-service internal mcp -name '*.go' 2>/dev/null)
 	@mkdir -p $(BINDIR)
-	go build -ldflags="-s -w" -o $@ ./cmd/knowledge-service
+	go build -ldflags="-s -w -X main.version=$(VERSION)" -o $@ ./cmd/knowledge-service
 
 $(CLI): go.sum $(shell find cmd/knowledge internal -name '*.go' 2>/dev/null)
 	@mkdir -p $(BINDIR)
-	go build -ldflags="-s -w" -o $@ ./cmd/knowledge
+	go build -ldflags="-s -w -X main.version=$(VERSION)" -o $@ ./cmd/knowledge
 
 go.sum: go.mod
 	go mod tidy

@@ -16,12 +16,17 @@ Write runbooks, solutions, and one-liners into it from conversations — they la
 
 **Prerequisites**: Go 1.24+, Make
 
+For semantic search (recommended): [Ollama](https://ollama.com) with `nomic-embed-text`. Without it the server falls back to TF-IDF keyword search silently — everything works, just with weaker paraphrase matching.
+
 ```bash
 # Build both binaries
 make build
 
 # Install to ~/.local/bin
 make install
+
+# (Optional but recommended) pull the embedding model
+ollama pull nomic-embed-text
 
 # Wire into your MCP client (see below)
 # On first start the server auto-ingests docs/ — no manual step needed
@@ -47,13 +52,13 @@ Copy `opencode.json` to your workspace root (it's already in this repo — adjus
 
 ## Tools
 
-| Tool | What it does |
-|---|---|
-| `search_knowledge` | Hybrid BM25 + Ollama semantic search. Call this before answering any SRE/DevOps question. |
-| `list_knowledge` | List all documents and headings. Use to discover what exists before writing. |
-| `write_knowledge` | Save a new chunk (path, **heading required**, content). Writes a `.md` file to `docs/` and re-indexes. |
-| `delete_knowledge` | Remove a document — deletes the `.md` file from disk and removes from the search index. |
-| `get_tool` | Retrieve a stored script or one-liner by name. Searches `tools/` prefix only; returns raw executable code. |
+| Tool | When to call | Notes |
+|---|---|---|
+| `search_knowledge` | Before answering any question where prior knowledge might exist | Falls back gracefully when KB is empty |
+| `list_knowledge` | Before writing (check for duplicates) or deleting (find exact path) | Supports path-prefix filter |
+| `write_knowledge` | After solving a non-trivial problem or discovering something non-obvious | Use `tools/<name>.md` for scripts; other paths for docs |
+| `delete_knowledge` | When a runbook is dangerously wrong or fully superseded | **Permanent** — prefer updating with `write_knowledge` |
+| `get_tool` | To retrieve a stored script or one-liner by name | Only searches `tools/` prefix; must use `write_knowledge` to add |
 
 ## Architecture
 
@@ -131,6 +136,15 @@ Markdown files in `docs/` are split at `#` and `##` headings. Each heading + its
 | `EMBED_DIMS` | `1024` | TF-IDF vector dimension (only when provider is TF-IDF) |
 | `AUTH_TOKEN` | _(unset = no auth)_ | Bearer token for HTTP mode |
 
+## Smoke Test (stdio mode)
+
+Verify the server is healthy without an MCP client:
+
+```bash
+echo '{"jsonrpc":"2.0","method":"ping","id":1}' | knowledge-service
+# → {"jsonrpc":"2.0","id":1,"result":{}}
+```
+
 ## HTTP Mode (non-MCP clients)
 
 ```bash
@@ -150,7 +164,7 @@ Exposes:
 docker compose up -d
 ```
 
-`docker-compose.yml` starts knowledge-service (port 3737) + Ollama, with `./docs` mounted read-only. On first run, pull the embedding model:
+`docker-compose.yml` starts knowledge-service (port 3737) + Ollama. The `./docs` directory is mounted read-write so `write_knowledge` can persist new entries to disk. On first run, pull the embedding model:
 
 ```bash
 docker compose exec ollama ollama pull nomic-embed-text
@@ -164,6 +178,8 @@ make ingest     # force full re-ingest of docs/ (normally done automatically on 
 make tidy       # go mod tidy
 make clean      # removes bin/ and knowledge.db
 ```
+
+> **`make ingest` and live servers**: If you change `EMBED_PROVIDER` or `EMBED_MODEL`, stop the server first, then run `make ingest` to re-vectorize the corpus with the new provider, then restart. Running `make ingest` against a live server targeting the same `DB_PATH` may hit SQLite write conflicts.
 
 The binary is ~14 MB, statically linked, no CGo required.
 

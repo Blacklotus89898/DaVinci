@@ -23,7 +23,7 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	return NewServer(s, logger, ""), s
+	return NewServer(s, logger, "", "test"), s
 }
 
 // exchange sends one JSON-RPC request and returns the decoded response.
@@ -390,7 +390,7 @@ func TestToolCallWriteWithDocsPath(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	srv := NewServer(s, logger, docsDir)
+	srv := NewServer(s, logger, docsDir, "test")
 
 	// First write — creates the file.
 	resp := exchange(t, srv, `{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"write_knowledge","arguments":{"path":"runbooks/test-runbook.md","heading":"Pod Drain Fix","content":"kubectl drain node --ignore-daemonsets"}}}`)

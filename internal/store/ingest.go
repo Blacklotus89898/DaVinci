@@ -115,6 +115,27 @@ func Ingest(s *Store, docsPath string) error {
 		return err
 	}
 
+	// Prune documents whose source .md files no longer exist in docsPath.
+	// Ingest only upserts what it finds; without this, deleted files persist forever.
+	walked := make(map[string]bool, len(docs))
+	for _, d := range docs {
+		walked[d.relPath] = true
+	}
+	dbRows, err := s.DB.Query(`SELECT path FROM documents`)
+	if err == nil {
+		var stale []string
+		for dbRows.Next() {
+			var p string
+			if dbRows.Scan(&p) == nil && !walked[p] {
+				stale = append(stale, p)
+			}
+		}
+		_ = dbRows.Close()
+		for _, p := range stale {
+			_, _ = s.DeleteDocument(p)
+		}
+	}
+
 	// Recompute IDF from the full corpus (all docs, not just the batch) and
 	// re-vectorize all chunks so stored vectors match the updated IDF.
 	s.rebuildVocabAndVectors()

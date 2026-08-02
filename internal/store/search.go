@@ -110,7 +110,9 @@ func vectorSearch(s *Store, query string, limit int) ([]Result, error) {
 		}
 		qvec = v
 	} else {
-		idfDefault := embed.SmoothedIDF(len(idf)+10, 0)
+		// Use corpus size (chunk count) as N, matching how rebuildVocabAndVectors
+		// computes idfDefault. len(idf) is vocabulary size, which is wrong here.
+		idfDefault := embed.SmoothedIDF(len(vecs)+10, 0)
 		tokens := embed.Tokenize(query)
 		tf := embed.TermFreq(tokens)
 		if tf == nil {

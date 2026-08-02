@@ -9,7 +9,7 @@ services:
       - "3737:3737"
     volumes:
       - knowledge-data:/data
-      - ./docs:/docs:ro
+      - ./docs:/docs
     environment:
       DB_PATH: /data/knowledge.db
       DOCS_PATH: /docs

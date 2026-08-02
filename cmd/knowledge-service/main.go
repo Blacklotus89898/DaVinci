@@ -20,6 +20,9 @@ import (
 	"github.com/blacklotus88888/knowledge-service/mcp"
 )
 
+// version is set at build time via -ldflags "-X main.version=<tag>".
+var version = "dev"
+
 func main() {
 	httpAddr := flag.String("http", "", "Start HTTP server on this address (e.g. :3737). Default: stdio MCP mode.")
 	flag.Parse()
@@ -75,7 +78,7 @@ func main() {
 		}
 	}
 
-	srv := mcp.NewServer(db, logger, docsPath)
+	srv := mcp.NewServer(db, logger, docsPath, version)
 
 	if *httpAddr != "" {
 		// HTTP mode benefits from concurrent readers; WAL supports multiple connections.

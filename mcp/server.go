@@ -21,12 +21,14 @@ type Server struct {
 	store    *store.Store
 	logger   *slog.Logger
 	docsPath string // if non-empty, write_knowledge persists to .md files here
+	version  string
 }
 
 // NewServer creates a Server. docsPath, when non-empty, activates markdown-as-source-of-truth
 // mode: write_knowledge writes .md files to docsPath and re-ingests instead of writing to the DB directly.
-func NewServer(s *store.Store, logger *slog.Logger, docsPath string) *Server {
-	return &Server{store: s, logger: logger, docsPath: docsPath}
+// version is the binary's release version (e.g. "v0.2.3"), injected via -ldflags at build time.
+func NewServer(s *store.Store, logger *slog.Logger, docsPath, version string) *Server {
+	return &Server{store: s, logger: logger, docsPath: docsPath, version: version}
 }
 
 // Run reads JSON-RPC messages from r and writes responses to w until EOF.
@@ -125,7 +127,7 @@ func (srv *Server) handle(enc *json.Encoder, msg *rpcMessage) {
 		srv.reply(enc, msg.ID, map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "knowledge-service", "version": "0.1.0"},
+			"serverInfo":      map[string]any{"name": "knowledge-service", "version": srv.version},
 		})
 
 	case "notifications/initialized", "initialized":
@@ -159,7 +161,7 @@ func toolsList() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "search_knowledge",
-			"description": "Search the knowledge base for relevant documentation, runbooks, and solutions. Always call this before answering SRE, DevOps, or coding questions.",
+			"description": "Search the knowledge base for relevant documentation, runbooks, solutions, and context. Call this before answering any question where prior knowledge might exist — infrastructure, architecture, debugging, procedures, or past incidents. If results are weak or absent, answer from your training and offer to save the solution afterward.",
 			"inputSchema": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -179,7 +181,7 @@ func toolsList() []map[string]any {
 		},
 		{
 			"name":        "list_knowledge",
-			"description": "List all documents and section headings in the knowledge base. Use this to discover what runbooks or solutions already exist before writing a new one.",
+			"description": "List all documents and section headings in the knowledge base. Use this to discover what exists before writing a new entry (to avoid duplicates) or to find the exact path needed for delete_knowledge.",
 			"inputSchema": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -193,22 +195,22 @@ func toolsList() []map[string]any {
 		},
 		{
 			"name":        "write_knowledge",
-			"description": "Save a new entry to the knowledge base as a markdown file. Call this after solving a non-trivial problem, completing an incident, or discovering something non-obvious so future sessions benefit. The entry is persisted as a .md file on disk and indexed in the DB.",
+			"description": "Persist a knowledge entry as a markdown file and index it for future search. Call this after solving a non-trivial problem, completing an incident, or discovering something non-obvious — so future sessions can find it. Do NOT write ephemeral conversation state, user preferences, or information that is version-specific and will expire quickly. Each call adds or updates one section (## heading) inside the target file; existing sections in the same file are preserved. IMPORTANT: scripts and one-liners intended for get_tool must be stored under a tools/ path (e.g. tools/drain-node.md) — only that prefix is searched by get_tool.",
 			"inputSchema": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Relative path, e.g. runbooks/argocd-oom.md or solutions/cilium-restart.md",
+						"description": "Relative path inside docs/. Use runbooks/<service>-<symptom>.md, solutions/<topic>.md, guides/<topic>.md, or tools/<name>.md for scripts retrievable via get_tool.",
 					},
 					"heading": map[string]any{
 						"type":        "string",
-						"description": "Section heading — used as the search anchor for this chunk",
+						"description": "Section heading (## level). Used as the primary search anchor. Be specific: 'OOMKilled on argocd-server' beats 'Problem'.",
 					},
 					"content": map[string]any{
 						"type":        "string",
-						"description": "Markdown content: problem description, root cause, fix commands, links",
+						"description": "Markdown body. Include: symptom, root cause, exact fix commands, and links. Scripts must be in fenced code blocks to be retrievable via get_tool.",
 					},
 				},
 				"required": []string{"path", "heading", "content"},
@@ -216,14 +218,14 @@ func toolsList() []map[string]any {
 		},
 		{
 			"name":        "delete_knowledge",
-			"description": "Delete a document from the knowledge base. Use when a runbook is outdated, wrong, or has been superseded.",
+			"description": "Permanently delete a document from the knowledge base (removes the .md file from disk and all index entries). This action is irreversible — there is no undo. Use only when a runbook is dangerously wrong, completely obsolete, or duplicated by a better entry. Prefer write_knowledge to update outdated sections. Always call list_knowledge first to confirm the exact path.",
 			"inputSchema": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Path of the document to delete (use list_knowledge to find the exact path)",
+						"description": "Exact path of the document to delete as shown by list_knowledge (e.g. runbooks/argocd-oom.md). The .md extension is optional.",
 					},
 				},
 				"required": []string{"path"},
@@ -231,7 +233,7 @@ func toolsList() []map[string]any {
 		},
 		{
 			"name":        "get_tool",
-			"description": "Retrieve a stored command, script, or kubectl one-liner by name. Returns the raw executable content (code block) ready to run. Store tools under tools/ with ## headings.",
+			"description": "Retrieve a stored command, script, or kubectl one-liner by name. Returns raw executable code ready to run. Only searches documents stored under the tools/ path prefix — use write_knowledge with a tools/<name>.md path to add new tools. For general documentation, use search_knowledge instead.",
 			"inputSchema": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -325,7 +327,11 @@ func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.Raw
 		if !strings.HasSuffix(mdPath, ".md") {
 			mdPath += ".md"
 		}
-		filePath := filepath.Join(srv.docsPath, mdPath)
+		filePath, err := safeFilePath(srv.docsPath, mdPath)
+		if err != nil {
+			srv.replyErr(enc, id, -32602, "invalid path: "+err.Error())
+			return
+		}
 
 		// Markdown-as-source-of-truth: write/update the .md file on disk, then re-ingest.
 		// The DB is a derived index — the .md file is the canonical record.
@@ -366,15 +372,15 @@ func upsertMarkdownSection(filePath, heading, content string) error {
 	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
 		return err
 	}
-	existing, err := os.ReadFile(filePath) //nolint:gosec // filePath is DOCS_PATH-rooted via filepath.Join
+	existing, err := os.ReadFile(filePath) //nolint:gosec // filePath validated by safeFilePath before reaching here
 	if err != nil {
 		// New file: derive a title from the filename.
 		stem := strings.TrimSuffix(filepath.Base(filePath), ".md")
 		title := strings.ReplaceAll(stem, "-", " ")
 		text := "# " + title + "\n\n## " + heading + "\n\n" + strings.TrimSpace(content) + "\n"
-		return os.WriteFile(filePath, []byte(text), 0o600) //nolint:gosec // path is DOCS_PATH-rooted
+		return os.WriteFile(filePath, []byte(text), 0o600) //nolint:gosec // path validated by safeFilePath
 	}
-	return os.WriteFile(filePath, []byte(updateSection(string(existing), heading, content)), 0o600) //nolint:gosec // path is DOCS_PATH-rooted
+	return os.WriteFile(filePath, []byte(updateSection(string(existing), heading, content)), 0o600) //nolint:gosec // path validated by safeFilePath
 }
 
 // updateSection finds "## heading" in md and replaces its body with content.
@@ -392,10 +398,11 @@ func updateSection(md, heading, content string) string {
 	if start == -1 {
 		return strings.TrimRight(md, "\n") + "\n\n## " + heading + "\n\n" + strings.TrimSpace(content) + "\n"
 	}
-	// Find the end of this section: next # or ## heading (but not ###).
+	// Find the end of this section: any heading at any level stops the section,
+	// so ### sub-headings are preserved rather than silently overwritten.
 	end := len(lines)
 	for i := start + 1; i < len(lines); i++ {
-		if strings.HasPrefix(lines[i], "## ") || strings.HasPrefix(lines[i], "# ") {
+		if isHeadingLine(lines[i]) {
 			end = i
 			break
 		}
@@ -427,21 +434,21 @@ func (srv *Server) toolList(enc *json.Encoder, id json.RawMessage, raw json.RawM
 	var sb strings.Builder
 	if len(docs) == 0 {
 		if args.Filter != "" {
-			fmt.Fprintf(&sb, "No documents matching prefix %q.\n", args.Filter)
+			fmt.Fprintf(&sb, "No documents matching prefix %q.\n\nTry list_knowledge with no filter to see all entries, or check the path prefix.\n", args.Filter)
 		} else {
-			sb.WriteString("Knowledge base is empty. Use write_knowledge to add runbooks and solutions.\n")
+			sb.WriteString("Knowledge base is empty.\n\nAdd entries with write_knowledge:\n  - runbooks/<service>-<symptom>.md  — incident runbooks\n  - solutions/<topic>.md             — one-time fixes with context\n  - tools/<name>.md                  — scripts (retrievable via get_tool)\n  - guides/<topic>.md                — how-to guides\n")
 		}
 	} else {
 		total := 0
 		for _, d := range docs {
 			total += len(d.Headings)
 		}
-		fmt.Fprintf(&sb, "Knowledge base: %d documents, %d chunks\n\n", len(docs), total)
+		fmt.Fprintf(&sb, "Knowledge base: %d documents, %d sections\n\n", len(docs), total)
 		for _, d := range docs {
 			fmt.Fprintf(&sb, "%s\n", d.Path)
 			for _, h := range d.Headings {
 				if h != "" {
-					fmt.Fprintf(&sb, "  § %s\n", h)
+					fmt.Fprintf(&sb, "  - %s\n", h)
 				}
 			}
 		}
@@ -471,9 +478,16 @@ func (srv *Server) toolDelete(enc *json.Encoder, id json.RawMessage, raw json.Ra
 			mdPath += ".md"
 		}
 		docPath = mdPath
-		filePath := filepath.Join(srv.docsPath, mdPath)
+		filePath, err := safeFilePath(srv.docsPath, mdPath)
+		if err != nil {
+			srv.replyErr(enc, id, -32602, "invalid path: "+err.Error())
+			return
+		}
 		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-			srv.logger.Warn("could not remove markdown file", "path", filePath, "err", err)
+			// Hard error: if the file remains on disk, Ingest will resurrect it on next startup.
+			srv.logger.Error("could not remove markdown file", "path", filePath, "err", err)
+			srv.replyErr(enc, id, -32603, "delete error: could not remove file from disk")
+			return
 		}
 	}
 
@@ -487,7 +501,7 @@ func (srv *Server) toolDelete(enc *json.Encoder, id json.RawMessage, raw json.Ra
 	srv.reply(enc, id, map[string]any{
 		"content": []map[string]any{{
 			"type": "text",
-			"text": fmt.Sprintf("Deleted: %s (%d chunks removed)", args.Path, n),
+			"text": fmt.Sprintf("Deleted: %s (%d sections removed)", docPath, n),
 		}},
 	})
 }
@@ -567,6 +581,32 @@ func extractCodeBlock(s string) string {
 	return s
 }
 
+// safeFilePath resolves relPath under docsPath and confirms the result stays
+// inside docsPath, preventing path traversal via "../.." in user-supplied paths.
+func safeFilePath(docsPath, relPath string) (string, error) {
+	abs, err := filepath.Abs(filepath.Join(docsPath, relPath))
+	if err != nil {
+		return "", err
+	}
+	root, err := filepath.Abs(docsPath)
+	if err != nil {
+		return "", err
+	}
+	if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes the docs directory", relPath)
+	}
+	return abs, nil
+}
+
+// isHeadingLine reports whether line is a Markdown heading at any level (#, ##, ###, …).
+func isHeadingLine(line string) bool {
+	i := 0
+	for i < len(line) && line[i] == '#' {
+		i++
+	}
+	return i > 0 && i < len(line) && line[i] == ' '
+}
+
 // negotiateVersion returns the best version the server supports given the
 // client's preferred version. Defaults to the server's oldest stable version.
 func negotiateVersion(clientVersion string) string {
@@ -580,10 +620,23 @@ func negotiateVersion(clientVersion string) string {
 
 const maxPreviewChars = 1500
 
+// scoreLabel converts an RRF score to a human-readable match quality label.
+// Thresholds are calibrated to the wFTS=4.0 / wVec=0.5 / k=60 RRF parameters.
+func scoreLabel(score float64) string {
+	switch {
+	case score >= 0.04:
+		return "strong match"
+	case score >= 0.015:
+		return "relevant"
+	default:
+		return "weak match"
+	}
+}
+
 func formatResults(results []store.Result, query string) string {
 	if len(results) == 0 {
 		return fmt.Sprintf(
-			"No results found for: %q\n\nTip: use list_knowledge to see what topics exist, or broaden your query terms.",
+			"No results found for: %q\n\nTip: use list_knowledge to see what topics exist, try broader or different terms, or use write_knowledge to add new content.",
 			query,
 		)
 	}
@@ -594,7 +647,7 @@ func formatResults(results []store.Result, query string) string {
 		if r.Heading != "" {
 			fmt.Fprintf(&sb, " / %s", r.Heading)
 		}
-		fmt.Fprintf(&sb, " (score: %.4f) ---\n", r.Score)
+		fmt.Fprintf(&sb, " [%s] ---\n", scoreLabel(r.Score))
 		preview := r.Content
 		if len(preview) > maxPreviewChars {
 			cut := maxPreviewChars

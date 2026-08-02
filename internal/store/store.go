@@ -41,6 +41,7 @@ type Store struct {
 	DB        *sql.DB
 	lru       *cache.LRU[string, []Result]
 	mu        sync.RWMutex
+	rebuildMu sync.Mutex // serialises concurrent rebuildVocabAndVectors calls
 	idf       map[string]float64
 	vecs      []ChunkVec
 	provider  embed.Provider // nil → TF-IDF hashing
@@ -132,13 +133,17 @@ func (s *Store) Close() error { return s.DB.Close() }
 // If the store already contains vectors from a different provider dimension,
 // run `make ingest` to re-vectorize the entire corpus before searching.
 func (s *Store) SetProvider(p embed.Provider) {
-	if p != nil && len(s.vecs) > 0 {
-		// Warn if existing in-memory vectors have a different dimension — they will
-		// score 0 against the new provider's query vectors until re-ingest is run.
-		if len(s.vecs) > 0 && len(s.vecs[0].Vec) != p.Dims() {
-			fmt.Fprintf(os.Stderr,
-				"warning: existing corpus uses %d-dim vectors but new provider uses %d-dim — run `make ingest` to re-vectorize\n",
-				len(s.vecs[0].Vec), p.Dims())
+	if p != nil {
+		// Query the DB directly so the warning fires even before LoadVecs() is called.
+		var blobLen sql.NullInt64
+		_ = s.DB.QueryRow(`SELECT length(vector) FROM chunks WHERE vector IS NOT NULL LIMIT 1`).Scan(&blobLen)
+		if blobLen.Valid {
+			storedDims := int(blobLen.Int64) / 4
+			if storedDims != p.Dims() {
+				fmt.Fprintf(os.Stderr,
+					"warning: existing corpus uses %d-dim vectors but new provider uses %d-dim — run `make ingest` to re-vectorize\n",
+					storedDims, p.Dims())
+			}
 		}
 	}
 	s.provider = p
@@ -213,11 +218,16 @@ func (s *Store) reloadIDF() {
 // Ollama mode: skips the vocab step and only embeds chunks with a NULL vector blob,
 // since Ollama embeddings are corpus-independent (no IDF recalculation needed).
 func (s *Store) rebuildVocabAndVectors() {
+	// Serialise concurrent calls so two simultaneous writes don't interleave
+	// their vocab table updates and per-chunk vector UPDATEs.
+	s.rebuildMu.Lock()
+	defer s.rebuildMu.Unlock()
+
 	type chunkRow struct {
-		id         int64
-		heading    string
-		content    string
-		hasVector  bool
+		id        int64
+		heading   string
+		content   string
+		hasVector bool
 	}
 
 	rows, err := s.DB.Query(`SELECT id, heading, content, (vector IS NOT NULL) FROM chunks`)
@@ -309,7 +319,11 @@ func (s *Store) rebuildVocabAndVectors() {
 	}
 
 	s.mu.Lock()
-	s.idf = idf
+	if s.provider == nil {
+		// Only update s.idf in TF-IDF mode; Ollama embeddings are corpus-independent
+		// and the IDF map loaded at startup must not be overwritten with nil.
+		s.idf = idf
+	}
 	s.vecs = nil
 	s.mu.Unlock()
 }
@@ -413,9 +427,15 @@ func (s *Store) DeleteDocument(path string) (int, error) {
 	var chunkIDs []int64
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err == nil {
-			chunkIDs = append(chunkIDs, id)
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, err
 		}
+		chunkIDs = append(chunkIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
 	}
 	_ = rows.Close()
 
