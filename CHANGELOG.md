@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.2.2](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.1...knowledge-service-v0.2.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* gosec G104 on rows.Close and tx.Rollback in store.go ([5fe0894](https://github.com/Blacklotus89898/DaVinci/commit/5fe08943bc45b1541c42adc75fcb9742634639b8))
+
 ## [0.2.1](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.0...knowledge-service-v0.2.1) (2026-08-02)
 
 
