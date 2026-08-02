@@ -37,7 +37,7 @@ func main() {
 		logger.Error("failed to open database", "path", dbPath, "err", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	// Optional: override TF-IDF dimension (only matters when EMBED_PROVIDER != ollama).
 	if dimsStr := env("EMBED_DIMS", ""); dimsStr != "" {

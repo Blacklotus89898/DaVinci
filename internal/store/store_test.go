@@ -15,7 +15,7 @@ func openTemp(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -356,13 +356,13 @@ Gamma content about Cilium CNI eBPF networking and routing.
 	for i := 0; i < b.N; i++ {
 		s, _ := Open(filepath.Join(b.TempDir(), "bench.db"))
 		_ = Ingest(s, dir)
-		s.Close()
+		_ = s.Close()
 	}
 }
 
 func BenchmarkHybridCold(b *testing.B) {
 	s, _ := Open(filepath.Join(b.TempDir(), "bench.db"))
-	defer s.Close()
+	defer s.Close() //nolint:errcheck
 	dir := b.TempDir()
 	md := `# Doc
 ## Section

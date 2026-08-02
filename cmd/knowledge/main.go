@@ -21,7 +21,7 @@ func main() {
 	if err != nil {
 		fatalf("open db: %v", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	applyEmbedConfig(db)
 

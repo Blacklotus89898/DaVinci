@@ -24,8 +24,6 @@ linters:
         - (*database/sql.Stmt).Close
         # HTTP response body close — standard deferred cleanup pattern.
         - (io.ReadCloser).Close
-        # Store.Close is called in defer at process exit or test cleanup.
-        - (*github.com/blacklotus88888/knowledge-service/internal/store.Store).Close
 
 issues:
   exclude-rules:
