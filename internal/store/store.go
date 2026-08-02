@@ -279,7 +279,7 @@ func (s *Store) rebuildVocabAndVectors() {
 				break
 			}
 		}
-		stmt.Close()
+		_ = stmt.Close()
 		if execErr != nil {
 			_ = tx.Rollback()
 			return
@@ -305,7 +305,7 @@ func (s *Store) rebuildVocabAndVectors() {
 		if v == nil {
 			continue
 		}
-		vstmt.Exec(embed.ToBytes(v), c.id) //nolint:errcheck
+		_, _ = vstmt.Exec(embed.ToBytes(v), c.id)
 	}
 
 	s.mu.Lock()
@@ -399,7 +399,7 @@ func (s *Store) DeleteDocument(path string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer func() { _ = tx.Rollback() }()
 
 	var docID int64
 	if err := tx.QueryRow(`SELECT id FROM documents WHERE path=?`, path).Scan(&docID); err != nil {
@@ -417,7 +417,7 @@ func (s *Store) DeleteDocument(path string) (int, error) {
 			chunkIDs = append(chunkIDs, id)
 		}
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	for _, cid := range chunkIDs {
 		if _, err := tx.Exec(`DELETE FROM chunks_fts WHERE rowid=?`, cid); err != nil {
@@ -448,7 +448,7 @@ func (s *Store) WriteChunk(path, heading, content string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec(
 		`INSERT INTO documents(path, title) VALUES(?,?) ON CONFLICT(path) DO NOTHING`,
