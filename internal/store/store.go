@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/blacklotus88888/knowledge-service/internal/cache"
@@ -17,22 +19,31 @@ type ChunkVec struct {
 	DocPath string
 	Heading string
 	Content string
+	Updated string
 	Vec     []float32
 }
 
-// Result is a single search hit.
+// Result is a single search hit. Score is the fused RRF score; FTSRank and
+// VecRank are the 1-based ranks in the keyword and vector result lists (0 when
+// the hit came from only one channel), and Cosine is the raw vector similarity
+// when the vector channel produced the hit.
 type Result struct {
 	ID      int64
 	Path    string
 	Heading string
 	Content string
+	Updated string
 	Score   float64
+	FTSRank int
+	VecRank int
+	Cosine  float64
 }
 
 // DocSummary is a brief overview of a document in the knowledge base.
 type DocSummary struct {
 	Path     string
 	Title    string
+	Tags     []string
 	Headings []string
 }
 
@@ -50,7 +61,10 @@ type Store struct {
 
 // currentSchemaVersion is incremented when the schema changes in a way that
 // requires a migration. Open() rejects databases created by a newer binary.
-const currentSchemaVersion = 1
+//
+// v2 added: documents.tags, chunks.updated_at, and the meta table (which
+// records the embedding vector dimensions the corpus was built with).
+const currentSchemaVersion = 2
 
 const schema = `
 PRAGMA journal_mode=WAL;
@@ -62,16 +76,18 @@ CREATE TABLE IF NOT EXISTS documents (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     path        TEXT    UNIQUE NOT NULL,
     title       TEXT,
+    tags        TEXT,
     ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    doc_id    INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    chunk_idx INTEGER NOT NULL,
-    heading   TEXT,
-    content   TEXT NOT NULL,
-    vector    BLOB,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_id     INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    chunk_idx  INTEGER NOT NULL,
+    heading    TEXT,
+    content    TEXT NOT NULL,
+    vector     BLOB,
+    updated_at DATETIME,
     UNIQUE(doc_id, chunk_idx)
 );
 
@@ -86,7 +102,43 @@ CREATE TABLE IF NOT EXISTS vocab (
     df   INTEGER NOT NULL,
     idf  REAL    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 `
+
+// isDupColumnErr reports whether err is SQLite's "duplicate column name"
+// error, which migrations treat as success (the column already exists).
+func isDupColumnErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column name")
+}
+
+// migrateToV2 upgrades a v1 database in place. Every statement is idempotent:
+// fresh databases created directly at v2 already contain the new columns, and
+// the resulting duplicate-column errors are ignored.
+func migrateToV2(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE documents ADD COLUMN tags TEXT`); err != nil && !isDupColumnErr(err) {
+		return fmt.Errorf("migrate documents.tags: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE chunks ADD COLUMN updated_at DATETIME`); err != nil && !isDupColumnErr(err) {
+		return fmt.Errorf("migrate chunks.updated_at: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+		return fmt.Errorf("migrate meta table: %w", err)
+	}
+	return nil
+}
+
+// setMeta upserts a key/value pair into the meta table.
+func (s *Store) setMeta(key, value string) {
+	_, _ = s.DB.Exec(
+		`INSERT INTO meta(key, value) VALUES(?,?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+		key, value,
+	)
+}
 
 // Open opens (or creates) the SQLite knowledge base at path.
 func Open(path string) (*Store, error) {
@@ -101,20 +153,24 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
-	// Check schema version. Stamp fresh databases; reject databases from newer binaries.
+	// Check schema version. Migrate older databases; reject databases from newer binaries.
 	var ver int
 	_ = db.QueryRow(`PRAGMA user_version`).Scan(&ver)
 	switch {
-	case ver == 0:
+	case ver > currentSchemaVersion:
+		_ = db.Close()
+		return nil, fmt.Errorf("database schema version %d is newer than this binary supports (%d) — upgrade knowledge-service", ver, currentSchemaVersion)
+	case ver < currentSchemaVersion:
+		if err := migrateToV2(db); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate to schema v%d: %w", currentSchemaVersion, err)
+		}
 		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("set schema version: %w", err)
 		}
-	case ver > currentSchemaVersion:
-		_ = db.Close()
-		return nil, fmt.Errorf("database schema version %d is newer than this binary supports (%d) — upgrade knowledge-service", ver, currentSchemaVersion)
 	}
-	// ver == currentSchemaVersion: already up to date. Future migrations go here.
+	// ver == currentSchemaVersion: already up to date. Future migrations extend the switch above.
 
 	s := &Store{
 		DB:        db,
@@ -147,6 +203,17 @@ func (s *Store) SetProvider(p embed.Provider) {
 		}
 	}
 	s.provider = p
+	if p != nil {
+		s.setMeta("embed_dims", strconv.Itoa(p.Dims()))
+	}
+}
+
+// HasProvider reports whether a neural embedding backend is active (as opposed
+// to the TF-IDF fallback). Callers use it to calibrate similarity thresholds.
+func (s *Store) HasProvider() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.provider != nil
 }
 
 // SetTFIDFDims overrides the TF-IDF vector dimension (default: embed.DefaultDims).
@@ -214,9 +281,13 @@ func (s *Store) reloadIDF() {
 // rebuildVocabAndVectors recomputes IDF over all chunks, updates the vocab table,
 // and re-vectorizes chunks whose stored vector is outdated or missing.
 //
-// TF-IDF mode: re-embeds ALL chunks because IDF changes globally with every write.
-// Ollama mode: skips the vocab step and only embeds chunks with a NULL vector blob,
-// since Ollama embeddings are corpus-independent (no IDF recalculation needed).
+// TF-IDF mode: re-embeds all TF-IDF-dimensioned chunks because IDF changes
+// globally with every write. Vectors stored with a different provider's
+// dimensions are left untouched — a TF-IDF fallback (e.g. Ollama down at
+// startup) must degrade search, never overwrite the semantic index.
+// Ollama mode: skips the vocab step and only embeds chunks whose stored
+// vector is missing or was written with different dimensions, since Ollama
+// embeddings are corpus-independent (no IDF recalculation needed).
 func (s *Store) rebuildVocabAndVectors() {
 	// Serialise concurrent calls so two simultaneous writes don't interleave
 	// their vocab table updates and per-chunk vector UPDATEs.
@@ -224,20 +295,24 @@ func (s *Store) rebuildVocabAndVectors() {
 	defer s.rebuildMu.Unlock()
 
 	type chunkRow struct {
-		id        int64
-		heading   string
-		content   string
-		hasVector bool
+		id      int64
+		heading string
+		content string
+		vecLen  int // stored vector length in bytes; 0 = no vector
 	}
 
-	rows, err := s.DB.Query(`SELECT id, heading, content, (vector IS NOT NULL) FROM chunks`)
+	rows, err := s.DB.Query(`SELECT id, heading, content, length(vector) FROM chunks`)
 	if err != nil {
 		return
 	}
 	var all []chunkRow
 	for rows.Next() {
 		var c chunkRow
-		if err := rows.Scan(&c.id, &c.heading, &c.content, &c.hasVector); err == nil {
+		var vecLen sql.NullInt64
+		if err := rows.Scan(&c.id, &c.heading, &c.content, &vecLen); err == nil {
+			if vecLen.Valid {
+				c.vecLen = int(vecLen.Int64)
+			}
 			all = append(all, c)
 		}
 	}
@@ -299,17 +374,24 @@ func (s *Store) rebuildVocabAndVectors() {
 		}
 	}
 
-	// Re-vectorize chunks. In Ollama mode, only process chunks missing a vector
-	// (embeddings are corpus-independent so existing vectors remain valid).
-	// In TF-IDF mode, re-embed all chunks since IDF changed globally.
+	// Re-vectorize chunks. Dimension mismatches are skipped so a provider
+	// fallback never overwrites another provider's vectors (see comment above).
+	wantBytes := s.tfidfDims * 4
+	if s.provider != nil {
+		wantBytes = s.provider.Dims() * 4
+	}
 	vstmt, err := s.DB.Prepare(`UPDATE chunks SET vector=? WHERE id=?`)
 	if err != nil {
 		return
 	}
 	defer vstmt.Close()
 	for _, c := range all {
-		if s.provider != nil && c.hasVector {
-			continue // Ollama: skip already-embedded chunks
+		if s.provider != nil {
+			if c.vecLen == wantBytes {
+				continue // Ollama: fresh embedding already stored
+			}
+		} else if c.vecLen > 0 && c.vecLen != wantBytes {
+			continue // TF-IDF: foreign-provider vector — never overwrite
 		}
 		v := s.vectorizeChunk(c.heading, c.content, idf, idfDefault)
 		if v == nil {
@@ -317,6 +399,8 @@ func (s *Store) rebuildVocabAndVectors() {
 		}
 		_, _ = vstmt.Exec(embed.ToBytes(v), c.id)
 	}
+
+	s.setMeta("embed_dims", strconv.Itoa(wantBytes/4))
 
 	s.mu.Lock()
 	if s.provider == nil {
@@ -338,7 +422,7 @@ func (s *Store) LoadVecs() error {
 	}
 
 	rows, err := s.DB.Query(`
-		SELECT c.id, d.path, c.heading, c.content, c.vector
+		SELECT c.id, d.path, c.heading, c.content, c.vector, COALESCE(c.updated_at, '')
 		FROM chunks c
 		JOIN documents d ON d.id = c.doc_id
 		WHERE c.vector IS NOT NULL
@@ -352,7 +436,7 @@ func (s *Store) LoadVecs() error {
 	for rows.Next() {
 		var cv ChunkVec
 		var blob []byte
-		if err := rows.Scan(&cv.ID, &cv.DocPath, &cv.Heading, &cv.Content, &blob); err != nil {
+		if err := rows.Scan(&cv.ID, &cv.DocPath, &cv.Heading, &cv.Content, &blob, &cv.Updated); err != nil {
 			continue
 		}
 		v := embed.FromBytes(blob)
@@ -379,7 +463,7 @@ func (s *Store) invalidateVecs() {
 // ListDocuments returns metadata for all documents whose path starts with filter.
 func (s *Store) ListDocuments(filter string) ([]DocSummary, error) {
 	rows, err := s.DB.Query(`
-		SELECT d.path, d.title, c.heading
+		SELECT d.path, d.title, c.heading, COALESCE(d.tags, '')
 		FROM documents d
 		JOIN chunks c ON c.doc_id = d.id
 		WHERE d.path LIKE ?
@@ -393,15 +477,21 @@ func (s *Store) ListDocuments(filter string) ([]DocSummary, error) {
 	var docs []DocSummary
 	idx := make(map[string]int)
 	for rows.Next() {
-		var path, title, heading string
-		if err := rows.Scan(&path, &title, &heading); err != nil {
+		var path, title, heading, tags string
+		if err := rows.Scan(&path, &title, &heading, &tags); err != nil {
 			continue
 		}
 		if i, ok := idx[path]; ok {
 			docs[i].Headings = append(docs[i].Headings, heading)
 		} else {
 			idx[path] = len(docs)
-			docs = append(docs, DocSummary{Path: path, Title: title, Headings: []string{heading}})
+			var docTags []string
+			for _, tag := range strings.Split(tags, ",") {
+				if tag = strings.TrimSpace(tag); tag != "" {
+					docTags = append(docTags, tag)
+				}
+			}
+			docs = append(docs, DocSummary{Path: path, Title: title, Tags: docTags, Headings: []string{heading}})
 		}
 	}
 	return docs, rows.Err()
@@ -482,6 +572,14 @@ func (s *Store) WriteChunk(path, heading, content string) error {
 		return err
 	}
 
+	// Doc tags (if any) are appended to the FTS content so tag terms are searchable.
+	var tags string
+	_ = tx.QueryRow(`SELECT COALESCE(tags,'') FROM documents WHERE id=?`, docID).Scan(&tags)
+	ftsContent := content
+	if tags != "" {
+		ftsContent = content + "\n" + tags
+	}
+
 	committed := false
 
 	// Upsert-by-heading when heading is non-empty.
@@ -490,13 +588,13 @@ func (s *Store) WriteChunk(path, heading, content string) error {
 		err := tx.QueryRow(`SELECT id FROM chunks WHERE doc_id=? AND heading=?`, docID, heading).Scan(&existingID)
 		if err == nil {
 			// Clear the vector so rebuildVocabAndVectors re-embeds this chunk.
-			if _, err := tx.Exec(`UPDATE chunks SET content=?, vector=NULL WHERE id=?`, content, existingID); err != nil {
+			if _, err := tx.Exec(`UPDATE chunks SET content=?, vector=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?`, content, existingID); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(`DELETE FROM chunks_fts WHERE rowid=?`, existingID); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`INSERT INTO chunks_fts(rowid, heading, content) VALUES(?,?,?)`, existingID, heading, content); err != nil {
+			if _, err := tx.Exec(`INSERT INTO chunks_fts(rowid, heading, content) VALUES(?,?,?)`, existingID, heading, ftsContent); err != nil {
 				return err
 			}
 			if err := tx.Commit(); err != nil {
@@ -514,14 +612,14 @@ func (s *Store) WriteChunk(path, heading, content string) error {
 			chunkIdx = int(maxIdx.Int64) + 1
 		}
 		res, err := tx.Exec(
-			`INSERT INTO chunks(doc_id, chunk_idx, heading, content, vector) VALUES(?,?,?,?,NULL)`,
+			`INSERT INTO chunks(doc_id, chunk_idx, heading, content, vector, updated_at) VALUES(?,?,?,?,NULL,CURRENT_TIMESTAMP)`,
 			docID, chunkIdx, heading, content,
 		)
 		if err != nil {
 			return err
 		}
 		chunkID, _ := res.LastInsertId()
-		if _, err := tx.Exec(`INSERT INTO chunks_fts(rowid, heading, content) VALUES(?,?,?)`, chunkID, heading, content); err != nil {
+		if _, err := tx.Exec(`INSERT INTO chunks_fts(rowid, heading, content) VALUES(?,?,?)`, chunkID, heading, ftsContent); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
@@ -534,12 +632,5 @@ func (s *Store) WriteChunk(path, heading, content string) error {
 	s.rebuildVocabAndVectors()
 	s.lru.Purge()
 	return nil
-}
-
-func idfLen(m map[string]float64) int {
-	if m == nil {
-		return 0
-	}
-	return len(m)
 }
 

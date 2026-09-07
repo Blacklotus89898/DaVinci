@@ -128,6 +128,63 @@ func TestSplitNoFrontmatter(t *testing.T) {
 	}
 }
 
+func TestSplitIgnoresHeadingsInCodeFences(t *testing.T) {
+	md := "# Runbook\n\n## Fix\nApply this manifest:\n\n```yaml\n## this is a YAML comment, not a heading\napp: argocd\n```\n\nReal content after the block.\n"
+	chunks := Split(md)
+
+	// The fenced "## this is a YAML comment" must NOT start a new chunk:
+	// expect exactly Doc + Fix.
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks (fence respected), got %d: %+v", len(chunks), chunks)
+	}
+	if chunks[1].Heading != "Fix" {
+		t.Errorf("[1] heading = %q, want %q", chunks[1].Heading, "Fix")
+	}
+	if !strings.Contains(chunks[1].Content, "## this is a YAML comment") {
+		t.Errorf("fenced heading line should stay inside the Fix chunk content: %q", chunks[1].Content)
+	}
+	if !strings.Contains(chunks[1].Content, "Real content after the block") {
+		t.Errorf("content after the fence should stay in the Fix chunk: %q", chunks[1].Content)
+	}
+}
+
+func TestSplitTildeFence(t *testing.T) {
+	md := "## Section\n~~~\n## not a heading\n~~~\n"
+	chunks := Split(md)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %+v", len(chunks), chunks)
+	}
+	if !strings.Contains(chunks[0].Content, "## not a heading") {
+		t.Errorf("tilde-fenced heading leaked into a new chunk: %+v", chunks)
+	}
+}
+
+func TestTags(t *testing.T) {
+	cases := []struct {
+		name string
+		md   string
+		want []string
+	}{
+		{"simple", "---\ntitle: X\ntags: argocd, oom, k8s\n---\n# T\nBody\n", []string{"argocd", "oom", "k8s"}},
+		{"no tags key", "---\ntitle: X\n---\n# T\n", nil},
+		{"no frontmatter", "# T\ntags: ignored\n", nil},
+		{"empty tags", "---\ntags:\n---\n# T\n", nil},
+		{"messy separators", "---\ntags:  postgres ,,, replication \n---\n# T\n", []string{"postgres", "replication"}},
+	}
+	for _, c := range cases {
+		got := Tags(c.md)
+		if len(got) != len(c.want) {
+			t.Errorf("%s: Tags = %v, want %v", c.name, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("%s: Tags[%d] = %q, want %q", c.name, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
 func TestSplitLargeChunkIsSplit(t *testing.T) {
 	// Build a chunk exceeding maxChunkChars (2000 chars) with paragraph breaks.
 	para := strings.Repeat("word ", 100) // ~500 chars

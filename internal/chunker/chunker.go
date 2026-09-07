@@ -20,6 +20,8 @@ type Chunk struct {
 //
 // Splitting rules:
 //   - Leading YAML frontmatter (--- ... ---) is stripped before parsing.
+//   - Fenced code blocks (``` or ~~~) are never split — heading-like lines
+//     inside a fence are treated as code.
 //   - Each # heading starts a new chunk (document title level).
 //   - Each ## heading starts a new chunk.
 //   - Each ### heading starts a new chunk whose heading is prefixed with the
@@ -33,6 +35,7 @@ func Split(markdown string) []Chunk {
 	var heading strings.Builder
 	var content strings.Builder
 	var parentH2 string // current ## heading context for ### chunks
+	inFence := false
 
 	flush := func() {
 		h := strings.TrimSpace(heading.String())
@@ -47,6 +50,17 @@ func Split(markdown string) []Chunk {
 	scanner := bufio.NewScanner(strings.NewReader(markdown))
 	for scanner.Scan() {
 		line := scanner.Text()
+		if isFence(line) {
+			inFence = !inFence
+			content.WriteString(line)
+			content.WriteByte('\n')
+			continue
+		}
+		if inFence {
+			content.WriteString(line)
+			content.WriteByte('\n')
+			continue
+		}
 		switch {
 		case strings.HasPrefix(line, "### "):
 			flush()
@@ -81,23 +95,59 @@ func Split(markdown string) []Chunk {
 
 // stripFrontmatter removes a leading YAML frontmatter block (---\n...\n---\n).
 func stripFrontmatter(s string) string {
+	_, rest := frontmatterBlock(s)
+	return rest
+}
+
+// frontmatterBlock splits s into its leading YAML frontmatter block (without
+// the --- delimiters) and the remaining markdown. Both are empty/s when there
+// is no frontmatter.
+func frontmatterBlock(s string) (block, rest string) {
 	s = strings.TrimLeft(s, " \t\r\n")
 	if !strings.HasPrefix(s, "---") {
-		return s
+		return "", s
 	}
-	rest := s[3:]
+	rest = s[3:]
 	// Opening --- must be followed immediately by a newline, not e.g. "---title".
 	if len(rest) == 0 || (rest[0] != '\n' && rest[0] != '\r') {
-		return s
+		return "", s
 	}
 	idx := strings.Index(rest, "\n---")
 	if idx < 0 {
-		return s
+		return "", s
 	}
-	after := rest[idx+4:]
+	block = rest[:idx]
 	// Skip the optional newline after the closing ---
-	after = strings.TrimLeft(after, "\r\n")
-	return after
+	rest = strings.TrimLeft(rest[idx+4:], "\r\n")
+	return block, rest
+}
+
+// Tags parses a comma-separated tags value from leading YAML frontmatter.
+// Returns nil when the document has no frontmatter or no tags key.
+func Tags(markdown string) []string {
+	block, _ := frontmatterBlock(markdown)
+	if block == "" {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(block, "\n") {
+		key, value, found := strings.Cut(line, ":")
+		if !found || strings.TrimSpace(key) != "tags" {
+			continue
+		}
+		for _, tag := range strings.Split(value, ",") {
+			if tag = strings.TrimSpace(tag); tag != "" {
+				out = append(out, tag)
+			}
+		}
+	}
+	return out
+}
+
+// isFence reports whether line opens or closes a fenced code block.
+func isFence(line string) bool {
+	t := strings.TrimSpace(line)
+	return strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~")
 }
 
 // splitLarge splits a chunk whose content exceeds maxChunkChars at double-newline

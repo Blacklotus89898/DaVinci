@@ -10,68 +10,99 @@ import (
 
 const (
 	rrfK         = 60
-	wFTS         = 4.0
-	wVec         = 0.5
+	wFTS         = 2.0
+	wVec         = 1.0
 	cacheSize    = 256
 	minCosineSim = float32(0.01)
 )
 
-// Hybrid performs BM25 FTS + vector search and merges results via Reciprocal Rank Fusion.
-func Hybrid(s *Store, query string, limit int, invalidate bool) ([]Result, error) {
-	if invalidate {
-		s.lru.Purge()
+// SearchOpts parameterises Search.
+type SearchOpts struct {
+	Query      string
+	Limit      int    // max results (default 5)
+	PathPrefix string // restrict results to paths under this prefix, e.g. "tools/"
+}
+
+// Search performs BM25 FTS + vector search and merges results via Reciprocal
+// Rank Fusion. Results are cached per (query, limit, prefix).
+func Search(s *Store, o SearchOpts) ([]Result, error) {
+	if o.Limit <= 0 {
+		o.Limit = 5
 	}
-	key := fmt.Sprintf("%s\x00%d", query, limit)
+	key := fmt.Sprintf("%s\x00%d\x00%s", o.Query, o.Limit, o.PathPrefix)
 	if cached, ok := s.lru.Get(key); ok {
 		return cached, nil
 	}
 
-	fts, err := ftsSearch(s, query, limit*4)
+	fts, err := ftsSearch(s, o.Query, o.PathPrefix, o.Limit*4)
 	if err != nil {
 		return nil, fmt.Errorf("fts: %w", err)
 	}
-	vec, err := vectorSearch(s, query, limit*4)
+	vec, err := vectorSearch(s, o.Query, o.PathPrefix, o.Limit*4)
 	if err != nil {
 		return nil, fmt.Errorf("vec: %w", err)
 	}
 
-	out := rrfMerge(fts, vec, limit)
+	out := rrfMerge(fts, vec, o.Limit)
 	s.lru.Set(key, out)
 	return out, nil
+}
+
+// Hybrid is a convenience wrapper for Search without a path filter.
+// Retained for the CLI and tests.
+func Hybrid(s *Store, query string, limit int, invalidate bool) ([]Result, error) {
+	if invalidate {
+		s.lru.Purge()
+	}
+	return Search(s, SearchOpts{Query: query, Limit: limit})
 }
 
 // InvalidateCache purges the search result cache for s.
 func InvalidateCache(s *Store) { s.lru.Purge() }
 
 // ftsSearch tries AND semantics first for precision; falls back to OR for recall.
-func ftsSearch(s *Store, query string, limit int) ([]Result, error) {
+func ftsSearch(s *Store, query, pathPrefix string, limit int) ([]Result, error) {
 	andQ, orQ := buildFTSQuery(query)
 	if andQ == "" {
 		return nil, nil
 	}
 	// AND: precise — all query tokens must appear.
-	if results, _ := runFTSQuery(s, andQ, limit); len(results) > 0 {
+	if results, _ := runFTSQuery(s, andQ, pathPrefix, limit); len(results) > 0 {
+		for i := range results {
+			results[i].FTSRank = i + 1
+		}
 		return results, nil
 	}
 	// OR fallback: broader recall.
 	if orQ != andQ {
-		if results, _ := runFTSQuery(s, orQ, limit); len(results) > 0 {
+		if results, _ := runFTSQuery(s, orQ, pathPrefix, limit); len(results) > 0 {
+			for i := range results {
+				results[i].FTSRank = i + 1
+			}
 			return results, nil
 		}
 	}
 	return nil, nil
 }
 
-func runFTSQuery(s *Store, ftsQuery string, limit int) ([]Result, error) {
-	rows, err := s.DB.Query(`
-		SELECT c.id, d.path, c.heading, c.content, -bm25(chunks_fts) AS score
+func runFTSQuery(s *Store, ftsQuery, pathPrefix string, limit int) ([]Result, error) {
+	q := `
+		SELECT c.id, d.path, c.heading, c.content, COALESCE(c.updated_at, ''), -bm25(chunks_fts) AS score
 		FROM chunks_fts
 		JOIN chunks c ON chunks_fts.rowid = c.id
 		JOIN documents d ON d.id = c.doc_id
-		WHERE chunks_fts MATCH ?
+		WHERE chunks_fts MATCH ?`
+	args := []any{ftsQuery}
+	if pathPrefix != "" {
+		q += ` AND d.path LIKE ?`
+		args = append(args, pathPrefix+"%")
+	}
+	q += `
 		ORDER BY score DESC
-		LIMIT ?
-	`, ftsQuery, limit)
+		LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, nil // degrade gracefully on malformed query
 	}
@@ -79,7 +110,7 @@ func runFTSQuery(s *Store, ftsQuery string, limit int) ([]Result, error) {
 	var out []Result
 	for rows.Next() {
 		var r Result
-		if err := rows.Scan(&r.ID, &r.Path, &r.Heading, &r.Content, &r.Score); err != nil {
+		if err := rows.Scan(&r.ID, &r.Path, &r.Heading, &r.Content, &r.Updated, &r.Score); err != nil {
 			continue
 		}
 		out = append(out, r)
@@ -87,7 +118,7 @@ func runFTSQuery(s *Store, ftsQuery string, limit int) ([]Result, error) {
 	return out, rows.Err()
 }
 
-func vectorSearch(s *Store, query string, limit int) ([]Result, error) {
+func vectorSearch(s *Store, query, pathPrefix string, limit int) ([]Result, error) {
 	if err := s.LoadVecs(); err != nil {
 		return nil, err
 	}
@@ -125,9 +156,12 @@ func vectorSearch(s *Store, query string, limit int) ([]Result, error) {
 		cv  ChunkVec
 		sim float32
 	}
-	scored := make([]scoredVec, len(vecs))
-	for i, cv := range vecs {
-		scored[i] = scoredVec{cv, embed.CosineSim(qvec, cv.Vec)}
+	scored := make([]scoredVec, 0, len(vecs))
+	for _, cv := range vecs {
+		if pathPrefix != "" && !strings.HasPrefix(cv.DocPath, pathPrefix) {
+			continue
+		}
+		scored = append(scored, scoredVec{cv, embed.CosineSim(qvec, cv.Vec)})
 	}
 	sort.Slice(scored, func(i, j int) bool { return scored[i].sim > scored[j].sim })
 
@@ -141,7 +175,10 @@ func vectorSearch(s *Store, query string, limit int) ([]Result, error) {
 			Path:    sc.cv.DocPath,
 			Heading: sc.cv.Heading,
 			Content: sc.cv.Content,
+			Updated: sc.cv.Updated,
 			Score:   float64(sc.sim),
+			VecRank: len(out) + 1,
+			Cosine:  float64(sc.sim),
 		})
 	}
 	return out, nil
@@ -157,7 +194,11 @@ func rrfMerge(fts, vec []Result, limit int) []Result {
 	}
 	for i, r := range vec {
 		scores[r.ID] += wVec / float64(rrfK+i+1)
-		if _, ok := meta[r.ID]; !ok {
+		if m, ok := meta[r.ID]; ok {
+			// Hit from both channels — keep the FTS copy and attach vector evidence.
+			m.VecRank, m.Cosine = r.VecRank, r.Cosine
+			meta[r.ID] = m
+		} else {
 			meta[r.ID] = r
 		}
 	}

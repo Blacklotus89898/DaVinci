@@ -1,11 +1,41 @@
 package store
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/blacklotus88888/knowledge-service/internal/embed"
 )
+
+// fakeProvider is a deterministic in-process embed.Provider for tests.
+type fakeProvider struct{ dims int }
+
+func (f *fakeProvider) Dims() int { return f.dims }
+
+func (f *fakeProvider) Embed(text string) ([]float32, error) {
+	v := make([]float32, f.dims)
+	// Spread a simple hash of the text across the vector so different texts
+	// get different (but stable) directions.
+	h := uint32(2166136261)
+	for i := 0; i < len(text); i++ {
+		h = (h ^ uint32(text[i])) * 16777619
+		v[i%f.dims] += float32(h%97) / 97.0
+	}
+	return embed.Normalize(v), nil
+}
+
+// vecBlobLen returns the byte length of a chunk's stored vector (0 when NULL).
+func vecBlobLen(t *testing.T, s *Store) int {
+	t.Helper()
+	var n int
+	if err := s.DB.QueryRow(`SELECT COALESCE(length(vector), 0) FROM chunks LIMIT 1`).Scan(&n); err != nil {
+		t.Fatalf("vecBlobLen: %v", err)
+	}
+	return n
+}
 
 // openTemp opens an in-memory (or temp-file) store for testing.
 func openTemp(t *testing.T) *Store {
@@ -331,6 +361,219 @@ func TestBuildFTSQuerySynonymSafety(t *testing.T) {
 	if strings.Contains(andQ2, "oom*") && strings.Contains(andQ2, "AND") {
 		// "oom*" in an AND expression next to "oomkilled*" would break recall
 		t.Errorf("AND query %q contains synonym token 'oom*' which breaks AND recall", andQ2)
+	}
+}
+
+// --- New behaviour: incremental ingest, vector preservation, prefix, metadata ---
+
+func TestIngestOneIndexesSingleFile(t *testing.T) {
+	s := openTemp(t)
+	dir := seedDocs(t, s)
+
+	// Add a new file and index only it.
+	newDoc := "# Postgres\n\n## Connection Pool Exhaustion\nToo many idle connections.\n"
+	if err := os.WriteFile(filepath.Join(dir, "postgres-pools.md"), []byte(newDoc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := IngestOne(s, dir, "postgres-pools.md"); err != nil {
+		t.Fatalf("IngestOne: %v", err)
+	}
+
+	results, err := Search(s, SearchOpts{Query: "idle connections postgres", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	found := false
+	for _, r := range results {
+		if strings.Contains(r.Path, "postgres-pools") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("IngestOne did not make the new doc searchable: %+v", results)
+	}
+
+	// Other docs must remain searchable (IngestOne must not prune them).
+	results, _ = Search(s, SearchOpts{Query: "cilium ebpf", Limit: 5})
+	if len(results) == 0 {
+		t.Error("existing docs lost after IngestOne — it must be additive")
+	}
+}
+
+func TestVectorsSurviveProviderFallback(t *testing.T) {
+	s := openTemp(t)
+	dir := seedDocs(t, s)
+
+	// Embed with a "neural" provider (8-dim, like Ollama would be).
+	s.SetProvider(&fakeProvider{dims: 8})
+	if err := Ingest(s, dir); err != nil {
+		t.Fatalf("ingest with provider: %v", err)
+	}
+	if got := vecBlobLen(t, s); got != 8*4 {
+		t.Fatalf("expected 8-dim vectors (32 bytes), got %d bytes", got)
+	}
+
+	// Provider disappears (e.g. Ollama down at startup) → TF-IDF fallback.
+	// A full re-ingest must NOT overwrite the provider vectors.
+	s.SetProvider(nil)
+	if err := Ingest(s, dir); err != nil {
+		t.Fatalf("fallback ingest: %v", err)
+	}
+	if got := vecBlobLen(t, s); got != 8*4 {
+		t.Fatalf("fallback wiped provider vectors: got %d bytes, want 32", got)
+	}
+
+	// Provider returns: everything back to normal.
+	s.SetProvider(&fakeProvider{dims: 8})
+	results, err := Search(s, SearchOpts{Query: "cilium networking", Limit: 5})
+	if err != nil {
+		t.Fatalf("search after provider return: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected results with provider restored")
+	}
+}
+
+func TestUnchangedChunksKeepVectorsAcrossIngest(t *testing.T) {
+	s := openTemp(t)
+	dir := seedDocs(t, s)
+
+	s.SetProvider(&fakeProvider{dims: 8})
+	if err := Ingest(s, dir); err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+
+	// Re-ingest unchanged content: vectors must survive (CASE-preserved upsert,
+	// and rebuild skips chunks whose vector already matches provider dims).
+	if err := Ingest(s, dir); err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+	var nulls int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM chunks WHERE vector IS NULL`).Scan(&nulls); err != nil {
+		t.Fatal(err)
+	}
+	if nulls != 0 {
+		t.Errorf("unchanged re-ingest left %d chunks unembedded", nulls)
+	}
+}
+
+func TestSearchPathPrefix(t *testing.T) {
+	s := openTemp(t)
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "tools"), 0o750)
+	_ = os.WriteFile(filepath.Join(dir, "tools", "restart-deploy.md"), []byte("# T\n## Restart Deployment\nkubectl rollout restart deployment api.\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "runbook-restart.md"), []byte("# R\n## Restart Runbook\nrestart the deployment by hand\n"), 0o600)
+	if err := Ingest(s, dir); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	results, err := Search(s, SearchOpts{Query: "restart deployment", Limit: 10, PathPrefix: "tools/"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected tools/ results")
+	}
+	for _, r := range results {
+		if !strings.HasPrefix(r.Path, "tools/") {
+			t.Errorf("prefix filter leaked non-tools result: %s", r.Path)
+		}
+	}
+
+	// Vector channel must respect the prefix too.
+	vecOnly, err := Search(s, SearchOpts{Query: "rollout restart api deployment", Limit: 10, PathPrefix: "tools/"})
+	if err != nil {
+		t.Fatalf("vector search: %v", err)
+	}
+	for _, r := range vecOnly {
+		if !strings.HasPrefix(r.Path, "tools/") {
+			t.Errorf("vector channel leaked non-tools result: %s", r.Path)
+		}
+	}
+}
+
+func TestTagsIndexedAndListed(t *testing.T) {
+	s := openTemp(t)
+	dir := t.TempDir()
+	md := "---\ntitle: ArgoCD Runbook\ntags: argocd, oom, k8s\n---\n# ArgoCD Runbook\n\n## OOM Fix\nDeploy the pod-cleanup CronJob.\n"
+	if err := os.WriteFile(filepath.Join(dir, "argocd-oom.md"), []byte(md), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Ingest(s, dir); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	// Tags are searchable (appended to FTS content).
+	results, err := Search(s, SearchOpts{Query: "argocd", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected search hit")
+	}
+
+	// Tags are listed.
+	docs, err := s.ListDocuments("")
+	if err != nil || len(docs) != 1 {
+		t.Fatalf("ListDocuments: %v (%v)", docs, err)
+	}
+	if strings.Join(docs[0].Tags, ",") != "argocd,oom,k8s" {
+		t.Errorf("tags = %v, want [argocd oom k8s]", docs[0].Tags)
+	}
+}
+
+func TestUpdatedAtRecorded(t *testing.T) {
+	s := openTemp(t)
+	seedDocs(t, s)
+
+	var updated string
+	if err := s.DB.QueryRow(`SELECT COALESCE(updated_at, '') FROM chunks LIMIT 1`).Scan(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if len(updated) < 10 {
+		t.Errorf("expected updated_at timestamp, got %q", updated)
+	}
+
+	results, _ := Search(s, SearchOpts{Query: "cilium", Limit: 5})
+	for _, r := range results {
+		if r.Updated == "" {
+			t.Errorf("search result missing Updated: %+v", r)
+		}
+	}
+}
+
+func TestSchemaMigrationFromV1(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "v1.db")
+
+	// Create a v1-shaped database by hand (documents/chunks without tags/updated_at/meta).
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, title TEXT, ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP);`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	// Opening with the current binary migrates it to v2.
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open v1 db: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	var ver int
+	_ = s.DB.QueryRow(`PRAGMA user_version`).Scan(&ver)
+	if ver != 2 {
+		t.Fatalf("user_version = %d, want 2 after migration", ver)
+	}
+	// The new columns accept writes.
+	if _, err := s.DB.Exec(`INSERT INTO documents(path, title, tags) VALUES('x.md', 'X', 'a,b')`); err != nil {
+		t.Fatalf("insert into migrated documents: %v", err)
 	}
 }
 
