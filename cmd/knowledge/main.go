@@ -81,7 +81,7 @@ func doSearch(db *store.Store) {
 		}
 	}
 
-	results, err := store.Hybrid(db, query, limit, false)
+	results, err := store.Search(db, store.SearchOpts{Query: query, Limit: limit})
 	if err != nil {
 		fatalf("search: %v", err)
 	}

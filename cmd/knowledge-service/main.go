@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/blacklotus88888/knowledge-service/internal/embed"
+	"github.com/blacklotus88888/knowledge-service/internal/lock"
 	"github.com/blacklotus88888/knowledge-service/internal/store"
 	"github.com/blacklotus88888/knowledge-service/mcp"
 )
@@ -28,12 +30,26 @@ func main() {
 	flag.Parse()
 
 	dbPath := env("DB_PATH", "knowledge.db")
-	// DOCS_PATH defaults to "docs" — the DB is always a derived index from markdown files.
-	// Set DOCS_PATH="" to disable markdown mode and use the DB as primary storage.
-	docsPath := env("DOCS_PATH", "docs")
+	// DOCS_PATH is required: markdown files are the source of truth and the DB is
+	// a derived index. There is deliberately no default — a relative default would
+	// silently resolve against whatever directory each client session starts in.
+	docsPath := os.Getenv("DOCS_PATH")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: logLevel(env("LOG_LEVEL", "info")),
 	}))
+	if docsPath == "" {
+		logger.Error("DOCS_PATH is required — set it to your knowledge markdown directory (absolute path recommended)")
+		os.Exit(1)
+	}
+	if abs, err := filepath.Abs(docsPath); err == nil {
+		docsPath = abs
+	}
+	if _, err := os.Stat(docsPath); os.IsNotExist(err) { //nolint:gosec // docsPath is operator-configured via DOCS_PATH, not user input
+		if err := os.MkdirAll(docsPath, 0o750); err != nil { //nolint:gosec // see above
+			logger.Error("cannot create DOCS_PATH", "path", docsPath, "err", err)
+			os.Exit(1)
+		}
+	}
 
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -65,17 +81,18 @@ func main() {
 
 	// Sync DB from markdown files on every startup so the index always reflects what's on disk.
 	// Any manual edits to .md files are picked up here without needing to run `make ingest`.
-	if docsPath != "" {
-		if info, err := os.Stat(docsPath); err == nil && info.IsDir() {
-			logger.Info("syncing knowledge base from docs", "path", docsPath)
-			if err := store.Ingest(db, docsPath); err != nil {
-				logger.Warn("startup ingest failed", "path", docsPath, "err", err)
-			} else {
-				logger.Info("docs synced", "path", docsPath)
-			}
+	// The write lock serialises this against other knowledge-service processes
+	// (e.g. a second Claude Code session) writing to the same docs tree.
+	logger.Info("syncing knowledge base from docs", "path", docsPath)
+	if release, err := lock.Acquire(filepath.Join(docsPath, ".knowledge.lock")); err != nil {
+		logger.Warn("startup ingest skipped — could not acquire write lock", "err", err)
+	} else {
+		if err := store.Ingest(db, docsPath); err != nil {
+			logger.Warn("startup ingest failed", "path", docsPath, "err", err)
 		} else {
-			logger.Info("docs directory not found, starting with empty knowledge base", "path", docsPath)
+			logger.Info("docs synced", "path", docsPath)
 		}
+		release()
 	}
 
 	srv := mcp.NewServer(db, logger, docsPath, version)

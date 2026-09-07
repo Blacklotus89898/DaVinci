@@ -23,7 +23,8 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	return NewServer(s, logger, "", "test"), s
+	// Markdown files are the source of truth: every test server gets its own docs dir.
+	return NewServer(s, logger, t.TempDir(), "test"), s
 }
 
 // exchange sends one JSON-RPC request and returns the decoded response.
@@ -483,5 +484,193 @@ func TestNegotiateVersion(t *testing.T) {
 		if got != c.want {
 			t.Errorf("negotiateVersion(%q) = %q, want %q", c.client, got, c.want)
 		}
+	}
+}
+
+func TestUpdateSectionReplacesWholeSection(t *testing.T) {
+	// Alpha has a ### subsection; updating Alpha must replace the subsection too,
+	// not orphan it below the new body.
+	base := "# Title\n\n## Alpha\n\nalpha body\n\n### Sub\nold sub content\n\n## Beta\n\nbeta content\n"
+
+	out := updateSection(base, "Alpha", "new alpha body")
+	if !strings.Contains(out, "new alpha body") {
+		t.Errorf("new content missing:\n%s", out)
+	}
+	if strings.Contains(out, "old sub content") {
+		t.Errorf("### subsection should be replaced with its parent section:\n%s", out)
+	}
+	if !strings.Contains(out, "## Beta") || !strings.Contains(out, "beta content") {
+		t.Errorf("Beta section must survive:\n%s", out)
+	}
+}
+
+func TestUpdateSectionIgnoresFencedHeading(t *testing.T) {
+	// "## Real" appears inside a code fence under Other — the real section must
+	// be the one matched and replaced, and the fenced copy must survive.
+	base := "# T\n\n## Real\n\nreal body\n\n## Other\n\n```\n## Real\nfenced line\n```\n"
+
+	out := updateSection(base, "Real", "updated body")
+	if !strings.Contains(out, "updated body") {
+		t.Errorf("expected update to apply:\n%s", out)
+	}
+	if strings.Contains(out, "real body") {
+		t.Errorf("old real body should be replaced:\n%s", out)
+	}
+	if !strings.Contains(out, "## Real\nfenced line") {
+		t.Errorf("fenced heading copy must be preserved verbatim:\n%s", out)
+	}
+}
+
+func TestDemoteHeadings(t *testing.T) {
+	in := "intro\n\n## Symptom\n\nbad things\n\n### Nested\n\ndeep\n\n# Big\n\ntop\n\n```bash\n## not demoted\n```\n"
+	out := demoteHeadings(in)
+
+	if !strings.Contains(out, "### Symptom") {
+		t.Errorf("## should be demoted to ###:\n%s", out)
+	}
+	if !strings.Contains(out, "## Big") {
+		t.Errorf("# should be demoted to ##:\n%s", out)
+	}
+	if !strings.Contains(out, "### Nested") {
+		t.Errorf("### must stay ### (it indexes as a Parent/Child chunk):\n%s", out)
+	}
+	if !strings.Contains(out, "## not demoted") {
+		t.Errorf("fenced headings must not be demoted:\n%s", out)
+	}
+	if strings.Contains(out, "\n## Symptom") {
+		t.Errorf("original ## heading should be gone:\n%s", out)
+	}
+}
+
+func TestSlugify(t *testing.T) {
+	cases := map[string]string{
+		"Drain Node":    "drain-node",
+		"drain  node!":  "drain-node",
+		" K8s -- Pods ": "k8s-pods",
+		"restart:argocd": "restart-argocd",
+		"---":           "",
+	}
+	for in, want := range cases {
+		if got := slugify(in); got != want {
+			t.Errorf("slugify(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestWriteDemotesAndUpdatesWholeSection(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Content uses ## internal headings (old template style) — they must be
+	// demoted to ### so the named heading stays the sole section anchor.
+	resp := exchange(t, srv, `{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"write_knowledge","arguments":{"path":"runbooks/argocd-oom.md","heading":"ArgoCD OOM","content":"## Symptom\nOOMKilled.\n\n## Fix\nkubectl delete pods."}}}`)
+	if _, hasErr := resp["error"]; hasErr {
+		t.Fatalf("write failed: %v", resp)
+	}
+
+	// Verify on-disk structure via the store: the section heading chunk must
+	// contain its subsections' content after re-chunking.
+	results, err := store.Search(srv.store, store.SearchOpts{Query: "oomkilled symptom", Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected the written runbook to be searchable")
+	}
+
+	// Update the same heading: stale subsections must not linger.
+	resp = exchange(t, srv, `{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"write_knowledge","arguments":{"path":"runbooks/argocd-oom.md","heading":"ArgoCD OOM","content":"## Symptom\nStill OOMKilled.\n\n## Fix\nNew fix: raise memory limit."}}}`)
+	if _, hasErr := resp["error"]; hasErr {
+		t.Fatalf("update failed: %v", resp)
+	}
+
+	docs, err := srv.store.ListDocuments("runbooks/")
+	if err != nil || len(docs) == 0 {
+		t.Fatalf("ListDocuments after update: %v (%v)", docs, err)
+	}
+	headings := strings.Join(docs[0].Headings, "\n")
+	if strings.Contains(headings, "kubectl delete pods") {
+		t.Errorf("stale fix content survived the update: %q", headings)
+	}
+
+	all, _ := store.Search(srv.store, store.SearchOpts{Query: "oom", Limit: 20})
+	for _, r := range all {
+		if strings.Contains(r.Content, "kubectl delete pods") && strings.Contains(r.Heading, "Fix") {
+			t.Errorf("orphaned stale section still indexed: %s / %s", r.Path, r.Heading)
+		}
+	}
+}
+
+func TestGetToolExactLookup(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// Store a tool via write_knowledge so the .md file lands on disk.
+	writeTool := "{\"jsonrpc\":\"2.0\",\"id\":52,\"method\":\"tools/call\",\"params\":{\"name\":\"write_knowledge\",\"arguments\":{\"path\":\"tools/drain-node.md\",\"heading\":\"Drain Node\",\"content\":\"```bash\\nkubectl drain <node> --ignore-daemonsets\\n```\"}}}"
+	resp := exchange(t, srv, writeTool)
+	if _, hasErr := resp["error"]; hasErr {
+		t.Fatalf("write failed: %v", resp)
+	}
+
+	// Also store a runbook that mentions draining — it must never be returned
+	// by get_tool even though it may outrank the tool in plain search.
+	if err := srv.store.WriteChunk("runbooks/cluster-maintenance.md", "Node Maintenance", "drain drain drain — everything about draining nodes at length"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp = exchange(t, srv, `{"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"get_tool","arguments":{"name":"Drain Node"}}}`)
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("get_tool failed: %v", resp)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "kubectl drain") {
+		t.Errorf("expected exact tool code, got: %q", text)
+	}
+	if !strings.Contains(text, "tools/drain-node.md") {
+		t.Errorf("expected tools/ source path, got: %q", text)
+	}
+	if strings.Contains(text, "runbooks/") {
+		t.Errorf("runbook leaked into get_tool result: %q", text)
+	}
+}
+
+func TestSearchPathPrefix(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "tools"), 0o750)
+	_ = os.MkdirAll(filepath.Join(dir, "runbooks"), 0o750)
+	_ = os.WriteFile(filepath.Join(dir, "tools", "scale-deploy.md"), []byte("# Scale Deploy\n## Scale\nkubectl scale deployment.\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "runbooks", "deploy-issues.md"), []byte("# Deploy Issues\n## Scale Problem\nscaling deployments fails often\n"), 0o600)
+	if err := store.Ingest(srv.store, dir); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	resp := exchange(t, srv, `{"jsonrpc":"2.0","id":54,"method":"tools/call","params":{"name":"search_knowledge","arguments":{"query":"scale deployment","path_prefix":"tools/"}}}`)
+	text := resp["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	if strings.Contains(text, "runbooks/") {
+		t.Errorf("path_prefix filter leaked runbook results: %q", text)
+	}
+	if !strings.Contains(text, "tools/scale-deploy.md") {
+		t.Errorf("expected tools/ result, got: %q", text)
+	}
+}
+
+func TestWriteWithoutDocsPathRejected(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "nodocspath.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	srv := NewServer(s, logger, "", "test") // DB-only mode no longer exists
+
+	resp := exchange(t, srv, `{"jsonrpc":"2.0","id":55,"method":"tools/call","params":{"name":"write_knowledge","arguments":{"path":"x.md","heading":"H","content":"C"}}}`)
+	if _, hasErr := resp["error"]; !hasErr {
+		t.Errorf("write must be rejected without DOCS_PATH, got: %v", resp)
+	}
+
+	resp = exchange(t, srv, `{"jsonrpc":"2.0","id":56,"method":"tools/call","params":{"name":"delete_knowledge","arguments":{"path":"x.md"}}}`)
+	if _, hasErr := resp["error"]; !hasErr {
+		t.Errorf("delete must be rejected without DOCS_PATH, got: %v", resp)
 	}
 }
