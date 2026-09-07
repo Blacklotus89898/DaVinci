@@ -50,9 +50,9 @@ flowchart LR
     TOK --> EMB["Ollama nomic-embed-text<br/>768-dim · falls back to TF-IDF 1024-dim"]
     FTS5 -->|BM25 ranked list| RRF
     EMB -->|cosine sim ranked list| RRF
-    RRF["Reciprocal Rank Fusion<br/>FTS weight 4× · vec weight 0.5× · k=60"]
+    RRF["Reciprocal Rank Fusion<br/>FTS weight 2× · vec weight 1× · k=60"]
     RRF --> TOP[top-k results]
-    TOP --> CACHE["LRU cache<br/>key = query + limit"]
+    TOP --> CACHE["LRU cache<br/>key = query + limit + prefix"]
 ```
 
 ## Self-Improvement Loop
@@ -72,7 +72,9 @@ sequenceDiagram
     C->>U: diagnosis + fix
     Note over C: session ends
     C->>K: write_knowledge(path, heading, content)
-    K->>DB: upsert chunk + FTS + vector
+    K->>K: acquire .knowledge.lock
+    K->>DB: write .md file + IngestOne (just that file)
+    K->>K: release lock
     Note over DB: permanent memory
     Note over C,K: Next session: Claude searches first
 ```
@@ -150,7 +152,11 @@ After switching providers, run `make ingest` to re-vectorize all existing chunks
 | Limitation | Status |
 |---|---|
 | Linear vector scan O(n) | Fine to ~5,000 chunks; LRU caches repeated queries |
-| No metadata/tag filtering | Use `list_knowledge("runbooks/")` to scope, then search |
+| Tags are searchable text, not a filter | Use `path_prefix` on `search_knowledge` for scoping |
 | HTTP endpoint unauthenticated | Set `AUTH_TOKEN` env var to enable Bearer auth |
-| Switching embedding providers requires re-ingest | Run `make ingest` after changing `EMBED_PROVIDER` |
+| Provider downgrades degrade search only | Vectors from another provider's dimensions are never overwritten; re-ingest when you switch deliberately |
 | General paraphrases without Ollama | Use Ollama mode or write runbooks with multiple term forms |
+
+## Write Safety
+
+`write_knowledge` and `delete_knowledge` hold a cross-process lock file (`<DOCS_PATH>/.knowledge.lock`, exclusive create, stale after 30s) so several knowledge-service processes — e.g. parallel Claude Code sessions — serialise their markdown writes instead of clobbering each other's read-modify-write cycles. Startup ingest takes the same lock.

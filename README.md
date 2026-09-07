@@ -54,31 +54,44 @@ Copy `opencode.json` to your workspace root (it's already in this repo — adjus
 
 | Tool | When to call | Notes |
 |---|---|---|
-| `search_knowledge` | Before answering any question where prior knowledge might exist | Falls back gracefully when KB is empty |
-| `list_knowledge` | Before writing (check for duplicates) or deleting (find exact path) | Supports path-prefix filter |
+| `search_knowledge` | Before answering any question where prior knowledge might exist | Optional `path_prefix` scopes results (e.g. `runbooks/`) |
+| `list_knowledge` | Before writing (check for duplicates) or deleting (find exact path) | Supports path-prefix filter; shows tags |
 | `write_knowledge` | After solving a non-trivial problem or discovering something non-obvious | Use `tools/<name>.md` for scripts; other paths for docs |
 | `delete_knowledge` | When a runbook is dangerously wrong or fully superseded | **Permanent** — prefer updating with `write_knowledge` |
-| `get_tool` | To retrieve a stored script or one-liner by name | Only searches `tools/` prefix; must use `write_knowledge` to add |
+| `get_tool` | To retrieve a stored script or one-liner by name | Exact match on `tools/<name>.md` first (`"drain node"` → `tools/drain-node.md`), fuzzy search over `tools/` as fallback |
 
 ## Architecture
 
-```
-write_knowledge
-  └─ docs/<path>.md  (on disk, source of truth)
-       └─ store.Ingest() → SQLite index (derived cache)
+```mermaid
+flowchart TD
+    subgraph Clients["MCP clients"]
+        CC["Claude Code / OpenCode<br/>(stdio JSON-RPC)"]
+        HTTP["Any HTTP client<br/>POST /mcp · GET /schema.json"]
+    end
 
-search_knowledge
-  ├─ FTS5 MATCH "token1* AND token2*" (OR fallback)  →  BM25 ranked list
-  └─ Ollama nomic-embed-text (768-dim)               →  cosine sim ranked list
-         ↓
-  Reciprocal Rank Fusion (FTS weight 4×, vec weight 0.5×, k=60)
-         ↓
-  LRU cache (256 slots, sub-µs hit)
-         ↓
-  Top-k results
+    subgraph Server["knowledge-service"]
+        TOOLS["Tools<br/>search · list · write · delete · get_tool"]
+        LOCK[".knowledge.lock<br/>cross-process write lock"]
+        RRF["Reciprocal Rank Fusion<br/>FTS 2× · vector 1× · k=60"]
+        LRU["LRU cache<br/>256 slots"]
+    end
 
-startup
-  └─ scan docs/  →  store.Ingest()  (picks up all manual .md edits)
+    subgraph Storage["Storage"]
+        DOCS[("docs/*.md<br/>source of truth")]
+        DB[("knowledge.db<br/>SQLite WAL<br/>chunks · FTS5 · vectors<br/>tags · vocab · meta")]
+    end
+
+    CC --> TOOLS
+    HTTP --> TOOLS
+    TOOLS -->|"write_knowledge / delete_knowledge"| LOCK
+    LOCK --> DOCS
+    DOCS -->|"IngestOne (per write) ·<br/>full Ingest (startup)"| DB
+
+    TOOLS -->|"search_knowledge<br/>(optional path_prefix)"| RRF
+    DB -->|"FTS5 BM25"| RRF
+    DB -->|"Ollama vectors<br/>(TF-IDF fallback)"| RRF
+    RRF --> LRU
+    LRU --> TOOLS
 ```
 
 **Storage**: Plain markdown files in `docs/` (source of truth) + SQLite WAL mode as a derived search index. Single portable `.db` file, rebuilt from `docs/` whenever needed.
@@ -91,7 +104,9 @@ See [docs/architecture.md](docs/architecture.md) for diagrams, embedding details
 
 ## Document Format
 
-Markdown files in `docs/` are split at `#` and `##` headings. Each heading + its body becomes one searchable chunk. Mermaid diagrams, code blocks, and tables inside sections are included as-is and indexed as text content.
+Markdown files in `docs/` are split at `#`, `##`, and `###` headings (subsections are indexed as "Parent / Child"). Headings inside fenced code blocks are never treated as headings. Each heading + its body becomes one searchable chunk. Mermaid diagrams, code blocks, and tables inside sections are included as-is and indexed as text content.
+
+Optional YAML frontmatter is stripped before indexing; a `tags: a, b, c` entry is stored as document metadata (shown by `list_knowledge`, appended to the search index so tag terms are searchable). Chunks record an `updated_at` timestamp shown in search results.
 
 ### Path conventions
 
@@ -107,19 +122,23 @@ Markdown files in `docs/` are split at `#` and `##` headings. Each heading + its
 
 ### Write-back template (for agents)
 
+The `heading` argument becomes the `##` section; everything inside `content` should use `###` subsections (any `##` you pass is demoted automatically, and re-writing a heading replaces its whole section including old subsections):
+
 ```markdown
-## Symptom
+heading: "OOMKilled on argocd-server"
+content:
+### Symptom
 [What the alert or user saw]
 
-## Root Cause
+### Root Cause
 [Why it happened]
 
-## Fix
+### Fix
 ```bash
 # Exact commands
 ```
 
-## Prevention
+### Prevention
 [How to stop it from happening again]
 ```
 
@@ -128,9 +147,9 @@ Markdown files in `docs/` are split at `#` and `##` headings. Each heading + its
 | Variable | Default | Description |
 |---|---|---|
 | `DB_PATH` | `knowledge.db` | Path to the SQLite search index |
-| `DOCS_PATH` | `docs` | Directory containing markdown files (source of truth). Set to `""` to use DB-only mode. |
+| `DOCS_PATH` | _(required)_ | Absolute path to the markdown source-of-truth directory. There is no default and no DB-only mode — a relative default would silently resolve against whatever directory each client session starts in. Created if missing. |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `EMBED_PROVIDER` | _(unset = TF-IDF)_ | Set to `ollama` for semantic embeddings |
+| `EMBED_PROVIDER` | _(unset = TF-IDF)_ | Set to `ollama` for semantic embeddings. If Ollama is unreachable at startup the server falls back to TF-IDF **without overwriting** stored provider vectors — search degrades, the index never does. |
 | `EMBED_URL` | `http://localhost:11434` | Ollama base URL |
 | `EMBED_MODEL` | `nomic-embed-text` | Ollama model name |
 | `EMBED_DIMS` | `1024` | TF-IDF vector dimension (only when provider is TF-IDF) |
@@ -194,10 +213,10 @@ go test -race ./...
 ## Known Limitations
 
 - **Linear vector scan**: all chunk vectors are loaded into RAM and scanned per query. Fine under ~5,000 chunks; an ANN index would be needed beyond that.
-- **No metadata filtering**: `search_knowledge` searches all paths; use `list_knowledge("runbooks/")` to scope discovery first.
+- **Tag search, not tag filter**: tags are indexed as searchable text and shown in listings, but `search_knowledge` cannot filter *by* tag — use `path_prefix` for scoping.
 - **Paraphrases in TF-IDF mode**: `"disk full"` and `"no space left on device"` won't match each other without Ollama. Use `EMBED_PROVIDER=ollama` (recommended) or write runbooks with both forms.
-- **Provider switch requires re-ingest**: run `make ingest` after changing `EMBED_PROVIDER` so all stored vectors use the new embedding.
 - **Mermaid in write_knowledge content**: Mermaid diagram source is stored and indexed as text. The chunker does not render it — it's useful for visual review in the `.md` files but the search indexes raw mermaid syntax.
+- **Multi-process writes**: concurrent knowledge-service processes (several Claude Code sessions) serialise via a lock file in `DOCS_PATH` (`.knowledge.lock`); a write waits up to 10s for the lock, and stale locks from crashed processes are stolen after 30s.
 
 ## Contributing
 

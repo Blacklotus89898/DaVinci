@@ -15,10 +15,12 @@
 - Use **concrete SRE terms**: service names, error messages, exit codes, kubectl commands
 - Try the exact error string first (`OOMKilled`, `CrashLoopBackOff`, `no space left on device`)
 - If nothing returns, broaden: `search_knowledge("oom memory")` instead of `"OOMKilled"`
+- Scope with `path_prefix` when you know the category: `path_prefix: "runbooks/"` or `"tools/"`
 - The search uses FTS5 BM25 (keyword) + Ollama `nomic-embed-text` semantic vectors merged via RRF
 - Exact terms score highest via BM25; paraphrases and synonyms are caught by the semantic channel
 - Prefix matching is on: `kube` hits `kubernetes`, `argo` hits `argocd`
 - SRE synonym expansion: `OOMKilled` → also matches `oom`; `CrashLoopBackOff` → `crashloop`; `eviction/drain` → `evict`
+- `get_tool("drain node")` matches `tools/drain-node.md` **exactly** (spaces → hyphens); fuzzy search over `tools/` is only the fallback
 
 ## Workflow
 
@@ -58,19 +60,23 @@ A `tools/` entry must contain a fenced code block — `get_tool` extracts the fi
 
 ## Write-back Template
 
+The `heading` argument becomes the file's `##` section. Structure the `content` with `###` subsections — any `##` you pass inside content is demoted to `###` automatically, and re-writing the same heading replaces its whole section (stale subsections do not linger):
+
 ```
-## Symptom
+heading: "ArgoCD OOM — Pod Accumulation"
+content:
+### Symptom
 [What the user/alert saw]
 
-## Root Cause
+### Root Cause
 [Why it happened]
 
-## Fix
+### Fix
 ```bash
 # Exact commands
 ```
 
-## Prevention
+### Prevention
 [How to stop it from happening again]
 ```
 
@@ -80,6 +86,6 @@ A `tools/` entry must contain a fenced code block — `get_tool` extracts the fi
 {
   "path": "runbooks/argocd-oom.md",
   "heading": "ArgoCD OOM — Pod Accumulation",
-  "content": "## Symptom\nArgoCD OOMKilled. Disk pressure on nodes.\n\n## Root Cause\nCompleted pods not GC'd, fill /var/lib/kubelet.\n\n## Fix\nkubectl apply -f infrastructure/pod-cleanup/\n\n## Prevention\nPod-cleanup CronJob runs every 15 min."
+  "content": "### Symptom\nArgoCD OOMKilled. Disk pressure on nodes.\n\n### Root Cause\nCompleted pods not GC'd, fill /var/lib/kubelet.\n\n### Fix\nkubectl apply -f infrastructure/pod-cleanup/\n\n### Prevention\nPod-cleanup CronJob runs every 15 min."
 }
 ```
