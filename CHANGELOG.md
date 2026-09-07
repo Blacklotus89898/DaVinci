@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.2.4](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.3...knowledge-service-v0.2.4) (2026-08-02)
+
+
+### Bug Fixes
+
+* harden correctness, usability, and version reporting ([cc3decb](https://github.com/Blacklotus89898/DaVinci/commit/cc3decbdb97c9905446b080abd57de8fb96aaa49))
+
 ## [0.2.3](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.2...knowledge-service-v0.2.3) (2026-08-02)
 
 
