@@ -55,8 +55,16 @@ Call `delete_knowledge` when:
 | Executable scripts / one-liners | `tools/<name>.md` | `get_tool("<name>")` |
 | How-to guides | `guides/<topic>.md` | `search_knowledge` |
 | Architecture notes | `architecture/<component>.md` | `search_knowledge` |
+| Settled rationale ("why is it built this way") | `decisions/<topic>.md` | `search_knowledge` |
+| Environment-specific facts (hosts, ports, quirks) | `environment/<component>.md` | `search_knowledge` |
 
 A `tools/` entry must contain a fenced code block — `get_tool` extracts the first one and returns raw code for execution.
+
+### What not to write
+
+- **Todos and open questions.** They match a symptom's keywords, outrank real runbooks, and return no fix. Keep them in a `todo.md` outside the corpus.
+- **Speculative ideas.** `decisions/` is for choices already made. Unsettled ideas expire and pollute.
+- **Anything a competent model already knows.** Generic advice costs retrieval precision without adding information. Write what is true about *this* environment — versions, hostnames, port allocations, the workaround that only applies here.
 
 ## Write-back Template
 

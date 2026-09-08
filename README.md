@@ -117,8 +117,14 @@ Optional YAML frontmatter is stripped before indexing; a `tags: a, b, c` entry i
 | `tools/<name>.md` | Executable scripts, one-liners | `get_tool("<name>")` |
 | `guides/<topic>.md` | How-to guides | `search_knowledge` |
 | `architecture/<component>.md` | Architecture notes | `search_knowledge` |
+| `decisions/<topic>.md` | Settled rationale — why a thing is built the way it is | `search_knowledge` |
+| `environment/<component>.md` | Facts true only of this environment (hosts, ports, quirks) | `search_knowledge` |
 
 `tools/` entries must contain a fenced code block. `get_tool` extracts and returns the first one as raw executable code.
+
+`decisions/` holds rationale that is **settled** — a choice already made and the reasoning behind it. Open questions and speculative ideas do not belong: they match on keywords, rank against real answers, and return nothing actionable. Todos belong in a `todo.md` outside the corpus for the same reason.
+
+The test for any entry, in any prefix: **would a competent model already know this?** If yes, it costs retrieval precision without adding information. The corpus earns its value from what is true about *this* environment, not what is true in general.
 
 ### Write-back template (for agents)
 
