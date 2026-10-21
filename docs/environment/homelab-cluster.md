@@ -10,6 +10,13 @@ GitOps is app-of-apps ArgoCD from `github.com/Blacklotus89898/Homelab`
 (`bootstrap/root-app.yaml` is the entry point). Default StorageClass is
 `local-path`; PVCs are RWO, so SQLite-backed services use `strategy: Recreate`.
 
+Homelab repo docs (2026-10-21): `docs/overview.md` (goals/constraints),
+`docs/bootstrap.md` (ordered rebuild-from-git procedure + out-of-git ledger),
+`docs/adr/0001`–`0008` (codified decisions: VM single-binary, Kyverno-in-CI,
+git-as-DR, push-heartbeat dead-man, canary-gate=SLO, staging digest-knob,
+Backstage-portal+Petal-orchestrator, NodePort-until-gateway). Rebuild-parity
+runbook still lives here: `runbooks/cluster-rebuild-from-git.md`.
+
 Monitoring since 2026-09-29: VictoriaMetrics single-binary + vmagent + Grafana
 (ns `monitoring`, fullname `vmstack`) — see solutions/victoria-metrics-stack.md.
 
