@@ -58,3 +58,22 @@ The whole alert path (kuma → ntfy → phone) runs in-cluster; if the cluster/n
 
 ### Gotcha solved here
 See the "ArgoCD app permanently OutOfSync on StatefulSet (wildcard ignoreDifferences)" section above — same file.
+
+## uptime-kuma 2.x config-as-code with uptime-kuma-api 1.2.1 (three compat shims)
+
+### Context
+uptime-kuma has no declarative config. Homelab provisions it from `tools/uptime-kuma/monitors.yaml` via `tools/uptime-kuma/provision.py` (idempotent; creates admin from the sealed `monitoring/uptime-kuma-admin` Secret on a fresh instance; `KUMA_USERNAME`/`KUMA_PASSWORD` override for a UI-created admin). The `uptime-kuma-api` 1.2.1 library targets 1.x; against **2.1.2** three things break:
+
+### Breakages and fixes
+1. `add` fails: `SQLITE_CONSTRAINT: NOT NULL constraint failed: monitor.conditions` — 2.x added a NOT NULL `conditions` column. Fix: build the payload with `api._build_monitor_data(...)`, then `data["conditions"] = []` and `api._call("add", data)`. **Must be a list**, not the string `"[]"` — the server JSON-encodes it again and DNS monitors then fail with `conditions.forEach is not a function`.
+2. `save_status_page` -> `KeyError: 'incident'` — the library reads a key 2.x renamed. Fix: `cfg = api._call("getStatusPage", slug)["config"]`, `api._build_status_page_data(slug=..., id=cfg["id"], ...)`, `api._call("saveStatusPage", data)`.
+3. First call on a freshly booted instance -> `socketio.exceptions.TimeoutError` — the socket accepts before handlers are ready. Fix: retry `need_setup()` with backoff (12 x 5s).
+- The library's validator only accepts status-code buckets (`"200-299"`, `"300-399"`, or single codes) — `"200-399"` raises ValueError.
+
+### Other 2.x facts
+- `UPTIME_KUMA_DB_TYPE=sqlite` env pre-answers the first-run "setup database" wizard (declarative, rebuild-safe).
+- Default history retention is 180d — set `keepDataPeriodDays: 14` on small PVCs.
+- Trust a private CA for TLS-verified HTTP monitors with `NODE_EXTRA_CA_CERTS` (Homelab: cert-manager Certificate from `lab-ca` in the same ns; its secret's `ca.crt` is the root).
+
+### Verification method
+Rehearse on a throwaway pod (`kubectl run kuma-rehearsal --image=louislam/uptime-kuma:2.1.2 --env=UPTIME_KUMA_DB_TYPE=sqlite`, exposed via a temp NodePort — k3s port-forward is flaky): fresh run -> 58 created; re-run -> 58 unchanged. Delete pod + svc afterwards.
