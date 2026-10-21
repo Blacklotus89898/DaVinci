@@ -37,4 +37,4 @@ NodePort map (verified from repo values): 30030 audiobookshelf, 30080 authentik,
 
 - Existing docs had stale `:latest` image lines (kavita/audiobookshelf/linkding) — corrected to the digest-pinned refs from the deployment manifests; keep docs image fields synced with manifests when bumping.
 - `homelab.io/image-pinned: "chart"` needs quotes in YAML ("true"/"false" strings would otherwise parse as booleans and Backstage rejects non-string annotation values).
-- Verify ingestion: `kubectl -n backstage exec backstage-postgresql-0 -- env PGPASSWORD=backstage psql -U backstage -d backstage_plugin_catalog -t -A -c "SELECT entity_ref FROM refresh_state WHERE entity_ref LIKE 'component:%'"` — expect 11 after the wildcard location refreshes.
+- Verify ingestion: `PGPASSWORD=$(kubectl -n backstage get secret backstage-postgresql -o jsonpath='{.data.password}' | base64 -d); kubectl -n backstage exec backstage-postgresql-0 -- env PGPASSWORD="$PGPASSWORD" psql -U backstage -d backstage_plugin_catalog -t -A -c "SELECT entity_ref FROM refresh_state WHERE entity_ref LIKE 'component:%'"` — expect 11 after the wildcard location refreshes.

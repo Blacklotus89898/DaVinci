@@ -13,7 +13,7 @@ GitOps is app-of-apps ArgoCD from `github.com/Blacklotus89898/Homelab`
 Monitoring since 2026-09-29: VictoriaMetrics single-binary + vmagent + Grafana
 (ns `monitoring`, fullname `vmstack`) — see solutions/victoria-metrics-stack.md.
 
-### NodePort allocations (verified against the cluster 2026-10-07)
+### NodePort allocations (verified against the cluster 2026-10-21)
 
 Everything is still exposed by raw NodePort — `platform/gateways/` is empty and
 Istio (installed, Synced/Healthy) is not used for routing yet. Check this list
@@ -24,6 +24,7 @@ before assigning a new port; the Jenkinsfile conflict check only greps literal
 |---|---|---|
 | 30001 | juice-shop | default ns, **not in git** — orphan pending user decision |
 | 30030 | audiobookshelf | |
+| 30050 | kavita | |
 | 30070 | paperless | scaled to zero by decision (see paperless-disabled.md) |
 | 30080 | authentik | adopted into GitOps 2026-10-01 (services/authentik/) |
 | 30090 | linkding | |
@@ -31,8 +32,9 @@ before assigning a new port; the Jenkinsfile conflict check only greps literal
 | 30300 | grafana | VictoriaMetrics stack (VM stack chart) |
 | 30310 | ntfy | topic `homelab-alerts`: vmalertmanager + ArgoCD notifications + uptime-kuma |
 | 30320 | uptime-kuma | external prober (solutions/uptime-kuma.md) |
+| 30330 / 31189 / 31744 | opencost | 30330 UI; 31189/31744 auto-assigned (API/MCP) |
 | 30443 | argocd (https) | |
-| 30500 / 32365 | openobserve | logs (OTel), 30500 UI |
+| 30500 / 32365 | openobserve | logs (OTel), 30500 UI; 3-day retention since 2026-10-15 |
 | 30808 | jenkins | |
 | 30900 | backstage | |
 | 30990 | petal | |

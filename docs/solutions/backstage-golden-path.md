@@ -26,7 +26,8 @@ The last path segment may be `*` (GitHub tree read) — a scaffolded service dro
 Backstage 1.53 gives each plugin its OWN postgres database (`backstage_plugin_catalog`, `backstage_plugin_auth`, …) — there is no single `backstage` DB of tables, no `entities` table, and `final_entities` has no `spec` column. Query the real schema:
 
 ```bash
-kubectl -n backstage exec backstage-postgresql-0 -- env PGPASSWORD=backstage psql -U backstage -d backstage_plugin_catalog -t -A -c \
+PGPASSWORD=$(kubectl -n backstage get secret backstage-postgresql -o jsonpath='{.data.password}' | base64 -d)
+kubectl -n backstage exec backstage-postgresql-0 -- env PGPASSWORD="$PGPASSWORD" psql -U backstage -d backstage_plugin_catalog -t -A -c \
   "SELECT r.entity_ref FROM refresh_state r"
 # spec fields: r.unprocessed_entity::json->'spec'->>'target';  managed-by-location: final_entities.final_entity::json->'metadata'->'annotations'
 ```
