@@ -89,3 +89,29 @@ Per-run workspaces live under the data PVC (`<data>/work/<run_id>`), not in the
 git-sync checkout, so steps never write into the synced source tree. The
 checkout is an `emptyDir` and is safe to lose — git-sync re-populates it on pod
 start.
+
+## VirtIOFS xattr prerequisite for the petal DinD share
+
+### Prerequisite: the Proxmox VirtIOFS share must have xattr enabled (else buildkit copy-out breaks)
+
+Even with fuse-overlayfs selected, builds fail at any `COPY --from=<stage>` (multi-stage copy-out) with:
+
+```
+failed to compute cache key: failed to calculate checksum of ref ...:
+failed to create hash for /src/...: operation not supported
+```
+
+Plain `RUN`/`COPY` inside stages work fine — it breaks exactly when buildkit copies files out of a stage snapshot (the hash/copy-out path needs xattr metadata ops that fuse-overlayfs stores on the upper layer).
+
+### Fix
+Proxmox: VM → Hardware → VirtIOFS share → Edit → enable **xattr** (requires VM stop/start — hardware changes don't apply live). Then remount (fstab survives) and verify:
+
+```sh
+python3 -c "import os; os.setxattr('/mnt/smb_storage/f', b'user.test', b'x'); print(os.getxattr('/mnt/smb_storage/f', b'user.test'))"
+```
+
+### Alternatives if xattr can't be enabled
+- dind `--storage-driver=vfs`: always works, slow (deep-copies layers), heavy disk
+- docker-lib on local ext4 + overlay2: fast, but build cache competes with the root fs (disk-pressure history on k3s-worker-01 — see runbooks/k3s-worker-disk-pressure.md)
+
+(Source: untracked draft `docs/solutions/virtiofs-xattr-dind-buildkit.md` in the Homelab repo — this section supersedes it; the KB is the canonical solutions home per repo CLAUDE.md.)
