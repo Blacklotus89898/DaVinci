@@ -15,6 +15,8 @@ Results are cached in an in-process LRU (256 slots). A cold search takes ~10 ms 
 
 ## Quick Start
 
+> On a new device, `sh scripts/setup.sh` (or `pwsh scripts/setup.ps1`) does all of the steps below; see the README "New device" section.
+
 ```bash
 # 1. Build both binaries
 make build
@@ -31,6 +33,7 @@ EMBED_PROVIDER=ollama bin/knowledge.exe search "pod keeps crashing"
 # 5. Wire into Claude Code (global, persists across sessions)
 claude mcp add knowledge /path/to/knowledge-service.exe \
   -e DB_PATH=/path/to/knowledge.db \
+  -e DOCS_PATH=/path/to/docs \
   -e EMBED_PROVIDER=ollama \
   -e EMBED_MODEL=nomic-embed-text \
   -e LOG_LEVEL=warn \

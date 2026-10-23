@@ -12,6 +12,31 @@ Write runbooks, solutions, and one-liners into it from conversations — they la
 - **5 MCP tools** over stdio (Claude Code, OpenCode) or HTTP (curl, any OpenAI-compatible client)
 - **Self-improving**: after every session the agent writes what it learned back into `docs/`, so future sessions search it before answering
 
+## New device (recommended)
+
+```bash
+git clone https://github.com/Blacklotus89898/DaVinci.git && cd DaVinci
+sh scripts/setup.sh          # Linux / macOS / Git Bash
+pwsh scripts/setup.ps1       # Windows PowerShell
+```
+
+The setup script builds both binaries (Go 1.24+ only, no `make` needed), pulls
+`nomic-embed-text` if Ollama is running (TF-IDF fallback otherwise), indexes `docs/`,
+runs a smoke search, and registers the `knowledge` MCP server with Claude Code at user
+scope with **absolute** `DB_PATH`/`DOCS_PATH`. Re-run it any time; it's idempotent.
+
+**The knowledge travels with git, not the DB.** `knowledge.db` is a derived index
+(gitignored, rebuilt on startup); the markdown in `docs/` is the source of truth. Sync
+between devices with:
+
+```bash
+sh scripts/kb-sync.sh        # or: pwsh scripts/kb-sync.ps1
+```
+
+It pulls other devices' entries, then commits and pushes this device's new ones
+(`docs(kb): sync N file(s) from <host>`). Run it at the end of a session that wrote to
+the KB; restart the MCP client after a pull so the server re-indexes.
+
 ## Quick Start
 
 **Prerequisites**: Go 1.24+, Make
