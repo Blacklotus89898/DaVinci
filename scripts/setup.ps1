@@ -21,7 +21,7 @@ go build -ldflags="-s -w -X main.version=$Version" -o bin\knowledge.exe .\cmd\kn
 $Provider = ''
 if ((Get-Command ollama -ErrorAction SilentlyContinue) -and ($null -ne (ollama list 2>$null))) {
     Write-Host '==> ollama found — pulling nomic-embed-text (one-time, ~274 MB)'
-    ollama pull nomic-embed-text | Out-Null
+    ollama pull nomic-embed-text 2>&1 | Out-Null
     $Provider = 'ollama'
 } else {
     Write-Host '==> ollama not running — using TF-IDF keyword search (install Ollama later and re-run for semantic search)'

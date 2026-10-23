@@ -26,7 +26,7 @@ go build -ldflags="-s -w -X main.version=$VERSION" -o "bin/knowledge$ext" ./cmd/
 PROVIDER=""
 if command -v ollama >/dev/null && ollama list >/dev/null 2>&1; then
   echo "==> ollama found — pulling nomic-embed-text (one-time, ~274 MB)"
-  ollama pull nomic-embed-text >/dev/null
+  ollama pull nomic-embed-text >/dev/null 2>&1
   PROVIDER=ollama
 else
   echo "==> ollama not running — using TF-IDF keyword search (install Ollama later and re-run for semantic search)"
