@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.2.5](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.4...knowledge-service-v0.2.5) (2026-10-24)
+
+
+### Features
+
+* **mcp:** locked markdown-only writes, exact get_tool, scoped search ([3a7ee7f](https://github.com/Blacklotus89898/DaVinci/commit/3a7ee7f8a30cd290f5bbbd6d46c82a48ebce7bbe))
+* **scripts:** one-shot setup + git-based KB sync for new devices ([2efb56a](https://github.com/Blacklotus89898/DaVinci/commit/2efb56a6ad5ceec52e974dfd91089d2d6f23d548))
+* **store:** incremental ingest, provider-safe vectors, tags and updated_at (schema v2) ([fb85358](https://github.com/Blacklotus89898/DaVinci/commit/fb8535806952475e47ca5c908f717e21a310ef04))
+
 ## [0.2.4](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.3...knowledge-service-v0.2.4) (2026-08-02)
 
 
