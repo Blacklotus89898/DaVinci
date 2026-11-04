@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/blacklotus88888/knowledge-service/internal/cache"
 	"github.com/blacklotus88888/knowledge-service/internal/embed"
@@ -26,17 +27,19 @@ type ChunkVec struct {
 // Result is a single search hit. Score is the fused RRF score; FTSRank and
 // VecRank are the 1-based ranks in the keyword and vector result lists (0 when
 // the hit came from only one channel), and Cosine is the raw vector similarity
-// when the vector channel produced the hit.
+// when the vector channel produced the hit. FTSStrict reports that the keyword
+// hit matched every query term (the AND query), not just some (OR fallback).
 type Result struct {
-	ID      int64
-	Path    string
-	Heading string
-	Content string
-	Updated string
-	Score   float64
-	FTSRank int
-	VecRank int
-	Cosine  float64
+	ID        int64
+	Path      string
+	Heading   string
+	Content   string
+	Updated   string
+	Score     float64
+	FTSRank   int
+	FTSStrict bool
+	VecRank   int
+	Cosine    float64
 }
 
 // DocSummary is a brief overview of a document in the knowledge base.
@@ -57,6 +60,39 @@ type Store struct {
 	vecs      []ChunkVec
 	provider  embed.Provider // nil → TF-IDF hashing
 	tfidfDims int            // dimension for TF-IDF vectors (ignored when provider != nil)
+	seenGen   atomic.Int64   // last index generation this process loaded (see syncGeneration)
+}
+
+// bumpGeneration records that the index changed. Every process sharing the DB
+// (one per Claude Code session) compares it in syncGeneration, so a write in
+// one session invalidates the cached vectors, IDF and results of the others.
+func (s *Store) bumpGeneration() {
+	var gen int64
+	if err := s.DB.QueryRow(
+		`INSERT INTO meta(key, value) VALUES('generation', '1')
+		 ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1
+		 RETURNING CAST(value AS INTEGER)`,
+	).Scan(&gen); err == nil {
+		s.seenGen.Store(gen) // our own change: in-memory state is already current
+	}
+}
+
+// generation returns the index generation stored in the DB (0 when unset).
+func (s *Store) generation() int64 {
+	var gen int64
+	_ = s.DB.QueryRow(`SELECT CAST(value AS INTEGER) FROM meta WHERE key='generation'`).Scan(&gen)
+	return gen
+}
+
+// syncGeneration reloads in-memory retrieval state when another process has
+// changed the index since this one last looked. It costs one indexed lookup.
+func (s *Store) syncGeneration() {
+	gen := s.generation()
+	if s.seenGen.Swap(gen) == gen {
+		return
+	}
+	s.reloadIDF() // also drops the vector cache
+	s.lru.Purge()
 }
 
 // currentSchemaVersion is incremented when the schema changes in a way that
@@ -178,6 +214,7 @@ func Open(path string) (*Store, error) {
 		tfidfDims: embed.DefaultDims,
 	}
 	s.reloadIDF()
+	s.seenGen.Store(s.generation())
 	return s, nil
 }
 
@@ -546,6 +583,7 @@ func (s *Store) DeleteDocument(path string) (int, error) {
 	}
 	s.invalidateVecs()
 	s.lru.Purge()
+	s.bumpGeneration()
 	return int(n) * len(chunkIDs), nil
 }
 
@@ -631,6 +669,6 @@ func (s *Store) WriteChunk(path, heading, content string) error {
 	// in TF-IDF mode all chunks are re-embedded with the updated IDF.
 	s.rebuildVocabAndVectors()
 	s.lru.Purge()
+	s.bumpGeneration()
 	return nil
 }
-

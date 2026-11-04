@@ -69,7 +69,9 @@ claude mcp add knowledge /path/to/knowledge-service \
   --scope user
 ```
 
-The `search_knowledge`, `list_knowledge`, `write_knowledge`, `delete_knowledge`, and `get_tool` tools are then available in every Claude Code session.
+The `search_knowledge`, `read_knowledge`, `list_knowledge`, `write_knowledge`, `delete_knowledge`, and `get_tool` tools are then available in every Claude Code session.
+
+Optional: add `-e KB_GIT_SYNC=1` (and `-e KB_GIT_BRANCH=main`, the default) so every `write_knowledge` / `delete_knowledge` commits the one file it touched and pushes it in the background. It only commits while the repo is on that branch, so KB writes never land on a feature branch you are developing on; a failed push is logged and `scripts/kb-sync` retries it. Know before enabling: the push is a normal `git push` of the whole branch (unpushed code commits on it go too), and the pull before it uses `--autostash`, so uncommitted edits elsewhere in the tree are stashed and re-applied. Your `core.sshCommand` is kept; BatchMode is added so a missing key fails fast.
 
 ## Wiring into OpenCode
 
@@ -80,6 +82,7 @@ Copy `opencode.json` to your workspace root (it's already in this repo — adjus
 | Tool | When to call | Notes |
 |---|---|---|
 | `search_knowledge` | Before answering any question where prior knowledge might exist | Optional `path_prefix` scopes results (e.g. `runbooks/`) |
+| `read_knowledge` | When a search preview is truncated, or before acting on a whole runbook | Full document or one section (`heading`, incl. its `###` subsections), read from the markdown source |
 | `list_knowledge` | Before writing (check for duplicates) or deleting (find exact path) | Supports path-prefix filter; shows tags |
 | `write_knowledge` | After solving a non-trivial problem or discovering something non-obvious | Use `tools/<name>.md` for scripts; other paths for docs |
 | `delete_knowledge` | When a runbook is dangerously wrong or fully superseded | **Permanent** — prefer updating with `write_knowledge` |
@@ -95,7 +98,7 @@ flowchart TD
     end
 
     subgraph Server["knowledge-service"]
-        TOOLS["Tools<br/>search · list · write · delete · get_tool"]
+        TOOLS["Tools<br/>search · read · list · write · delete · get_tool"]
         LOCK[".knowledge.lock<br/>cross-process write lock"]
         RRF["Reciprocal Rank Fusion<br/>FTS 2× · vector 1× · k=60"]
         LRU["LRU cache<br/>256 slots"]
@@ -125,7 +128,7 @@ flowchart TD
 
 **Embedding (fallback)**: TF-IDF with feature hashing — 1024-dim, offline, zero deps. Heading-boost (3×) and SRE synonym expansion (`OOMKilled ↔ oom`, `CrashLoopBackOff ↔ crashloop`, etc.).
 
-See [docs/architecture.md](docs/architecture.md) for diagrams, embedding details, and known limitations.
+See [service-docs/architecture.md](service-docs/architecture.md) for diagrams, embedding details, and known limitations.
 
 ## Document Format
 

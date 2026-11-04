@@ -29,6 +29,7 @@ func Search(s *Store, o SearchOpts) ([]Result, error) {
 	if o.Limit <= 0 {
 		o.Limit = 5
 	}
+	s.syncGeneration()
 	key := fmt.Sprintf("%s\x00%d\x00%s", o.Query, o.Limit, o.PathPrefix)
 	if cached, ok := s.lru.Get(key); ok {
 		return cached, nil
@@ -70,6 +71,7 @@ func ftsSearch(s *Store, query, pathPrefix string, limit int) ([]Result, error) 
 	if results, _ := runFTSQuery(s, andQ, pathPrefix, limit); len(results) > 0 {
 		for i := range results {
 			results[i].FTSRank = i + 1
+			results[i].FTSStrict = true
 		}
 		return results, nil
 	}
