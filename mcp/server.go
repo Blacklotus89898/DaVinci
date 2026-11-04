@@ -976,7 +976,9 @@ const maxPreviewChars = 1500
 // neural selects cosine thresholds for real embeddings; TF-IDF similarities
 // run lower, so its thresholds are more permissive. A top keyword rank counts
 // as strong only when every query term matched: the OR fallback ranks a chunk
-// that shares one common word ("what", "do") just as high.
+// that shares one common word ("goes", "out") just as high. For the same
+// reason an OR-fallback hit is only "relevant" when it covers at least half
+// the query terms; below that it is labelled weak so a miss reads as a miss.
 func scoreLabel(r store.Result, neural bool) string {
 	strongCos, relCos := 0.60, 0.35
 	if !neural {
@@ -985,7 +987,7 @@ func scoreLabel(r store.Result, neural bool) string {
 	switch {
 	case (r.FTSStrict && r.FTSRank > 0 && r.FTSRank <= 3) || r.Cosine >= strongCos:
 		return "strong match"
-	case r.FTSRank > 0 || r.Cosine >= relCos:
+	case (r.FTSRank > 0 && r.FTSCoverage >= 0.5) || r.Cosine >= relCos:
 		return "relevant"
 	default:
 		return "weak match"
@@ -1001,6 +1003,16 @@ func formatResults(results []store.Result, query string, neural bool) string {
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Knowledge base results for %q:\n\n", query)
+	allWeak := true
+	for _, r := range results {
+		if scoreLabel(r, neural) != "weak match" {
+			allWeak = false
+			break
+		}
+	}
+	if allWeak {
+		sb.WriteString("No strong or relevant match — these share only a few query terms. Try concrete terms (error strings, component names) or list_knowledge.\n\n")
+	}
 	for i, r := range results {
 		fmt.Fprintf(&sb, "--- [%d] %s", i+1, r.Path)
 		if r.Heading != "" {
