@@ -7,3 +7,4 @@ coverage
 .knowledge.lock
 .claude/settings.local.json
 .claude/worktrees/
+knowledge.env

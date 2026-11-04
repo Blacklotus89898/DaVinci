@@ -22,8 +22,16 @@ pwsh scripts/setup.ps1       # Windows PowerShell
 
 The setup script builds both binaries (Go 1.24+ only, no `make` needed), pulls
 `nomic-embed-text` if Ollama is running (TF-IDF fallback otherwise), indexes `docs/`,
-runs a smoke search, and registers the `knowledge` MCP server with Claude Code at user
-scope with **absolute** `DB_PATH`/`DOCS_PATH`. Re-run it any time; it's idempotent.
+runs a smoke search, writes `knowledge.env` (per-device settings, gitignored) and registers
+the `knowledge` MCP server with Claude Code at user scope — **the executable path only, no
+`-e` flags**. Re-run it any time; it's idempotent.
+
+**Settings are self-located.** Both binaries resolve each setting from the process
+environment, then `<repo>/knowledge.env` (found from the executable's own path,
+`<repo>/bin/..`), then the defaults `<repo>/docs` and `<repo>/knowledge.db` — never from the
+caller's working directory. To change a setting, edit `knowledge.env` and restart the session
+instead of re-registering (`-e` flags still override, but a partial set can no longer drop the
+rest). See `knowledge.env.example`.
 
 **The knowledge travels with git, not the DB.** `knowledge.db` is a derived index
 (gitignored, rebuilt on startup); the markdown in `docs/` is the source of truth. Sync
@@ -60,18 +68,16 @@ ollama pull nomic-embed-text
 ## Wiring into Claude Code
 
 ```bash
-claude mcp add knowledge /path/to/knowledge-service \
-  -e DB_PATH=/path/to/knowledge.db \
-  -e DOCS_PATH=/path/to/docs \
-  -e EMBED_PROVIDER=ollama \
-  -e EMBED_MODEL=nomic-embed-text \
-  -e LOG_LEVEL=warn \
-  --scope user
+cp knowledge.env.example knowledge.env   # per-device settings (EMBED_PROVIDER, KB_GIT_SYNC, …)
+claude mcp add knowledge /path/to/DaVinci/bin/knowledge-service --scope user
 ```
+
+No `-e` flags: the server finds `knowledge.env`, `docs/` and `knowledge.db` from its own
+location. Its startup log names where each setting came from.
 
 The `search_knowledge`, `read_knowledge`, `list_knowledge`, `write_knowledge`, `delete_knowledge`, and `get_tool` tools are then available in every Claude Code session.
 
-Optional: add `-e KB_GIT_SYNC=1` (and `-e KB_GIT_BRANCH=main`, the default) so every `write_knowledge` / `delete_knowledge` commits the one file it touched and pushes it in the background. It only commits while the repo is on that branch, so KB writes never land on a feature branch you are developing on; a failed push is logged and `scripts/kb-sync` retries it. Know before enabling: the push is a normal `git push` of the whole branch (unpushed code commits on it go too), and the pull before it uses `--autostash`, so uncommitted edits elsewhere in the tree are stashed and re-applied. Your `core.sshCommand` is kept; BatchMode is added so a missing key fails fast.
+Optional: set `KB_GIT_SYNC=1` (and `KB_GIT_BRANCH=main`, the default) in `knowledge.env` so every `write_knowledge` / `delete_knowledge` commits the one file it touched and pushes it in the background. It only commits while the repo is on that branch, so KB writes never land on a feature branch you are developing on; a failed push is logged and `scripts/kb-sync` retries it. Know before enabling: the push is a normal `git push` of the whole branch (unpushed code commits on it go too), and the pull before it uses `--autostash`, so uncommitted edits elsewhere in the tree are stashed and re-applied. Your `core.sshCommand` is kept; BatchMode is added so a missing key fails fast.
 
 ## Wiring into OpenCode
 
@@ -178,10 +184,12 @@ content:
 
 ## Environment Variables
 
+Set them in `<repo>/knowledge.env` (preferred) or the environment; the environment wins.
+
 | Variable | Default | Description |
 |---|---|---|
-| `DB_PATH` | `knowledge.db` | Path to the SQLite search index |
-| `DOCS_PATH` | _(required)_ | Absolute path to the markdown source-of-truth directory. There is no default and no DB-only mode — a relative default would silently resolve against whatever directory each client session starts in. Created if missing. |
+| `DB_PATH` | `<install>/knowledge.db` | Path to the SQLite search index |
+| `DOCS_PATH` | `<install>/docs` | Markdown source-of-truth directory. `<install>` is the executable's directory, or its parent when that is `bin/` — resolved from the executable's path, never the caller's cwd (a cwd-relative default would follow whatever directory each session starts in). Required only if that `docs/` doesn't exist. |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `EMBED_PROVIDER` | _(unset = TF-IDF)_ | Set to `ollama` for semantic embeddings. If Ollama is unreachable at startup the server falls back to TF-IDF **without overwriting** stored provider vectors — search degrades, the index never does. |
 | `EMBED_URL` | `http://localhost:11434` | Ollama base URL |
