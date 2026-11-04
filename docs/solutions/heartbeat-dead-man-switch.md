@@ -38,3 +38,23 @@ Why push-not-pull: an external prober (uptime-kuma watching "can the cluster pus
 3. GitHub Actions degraded → check the watchdog's own run history for missed schedules.
 
 Related: [runbooks/argocd-app-of-apps-wedge.md] (root health-gate wedge fixed alongside), solutions/ntfy-alert-pipeline.md, solutions/argocd-notifications-ntfy.md.
+
+## False "Heartbeat push FAILED" during a GitHub incident (2026-11-04)
+
+### Symptom
+ntfy `homelab-alerts` showed "⚠️ Heartbeat push FAILED (cluster is up)" at 10:07Z and 10:37Z, yet the `heartbeat` branch has commits for both slots, at :16 instead of the usual :03.
+
+### Root cause
+GitHub had a major "Pull Requests, Git Operations and Issues" incident (opened 09:49Z). The first pod's `git push` failed, and the script paged on that first failure. The Job's automatic retry pod (default `backoffLimit` 6) then pushed fine about 10s later. The PAT was not the problem: the same token pushed every other beat.
+
+### Fix (Homelab b2341b7)
+- One beat = fresh clone + commit + push, tried **3× over ~80s** (waits 0/20/60s). The alert fires only if all three fail.
+- Clone failures are now covered too. Under `sh -eu`, a failed clone used to exit before reaching the alert.
+- `backoffLimit: 1`. The default of 6 meant up to 7 pages per beat in a real outage.
+- The alert text now says to check https://www.githubstatus.com before the PAT.
+- Before shipping, simulated with a fake `git`: 2 failed pushes → exit 0, no alert; persistent failure → 3 attempts, 1 alert, exit 1.
+
+### Triage next time
+1. `git log -5 --format=%ci origin/heartbeat`: if every slot has a commit, it was transient.
+2. If beats are missing, check githubstatus.com.
+3. Only then suspect the PAT (`solutions/pat-rotation-seal.md`).
