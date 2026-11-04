@@ -2,6 +2,8 @@
 
 ## Power outage (no UPS): prepare, recover, verify
 
+Also known as: electricity goes out, blackout, power cut, power failure, brownout, everything went dark, host lost power.
+
 The whole lab is one Proxmox host (node `my`) on one SMR disk (`hard_drive`, ~94%) with no UPS. A power cut takes everything down at once: Proxmox, both k3s VMs (100 `debian` server, 104 `k3s-worker-01`), the Pi-hole DNS at 192.168.0.53, Glance LXC 116 and ubuntu.home.
 
 ### What has to be true for an unattended recovery

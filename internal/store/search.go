@@ -72,19 +72,44 @@ func ftsSearch(s *Store, query, pathPrefix string, limit int) ([]Result, error) 
 		for i := range results {
 			results[i].FTSRank = i + 1
 			results[i].FTSStrict = true
+			results[i].FTSCoverage = 1
 		}
 		return results, nil
 	}
 	// OR fallback: broader recall.
 	if orQ != andQ {
 		if results, _ := runFTSQuery(s, orQ, pathPrefix, limit); len(results) > 0 {
+			terms := embed.TokenizeRaw(query)
 			for i := range results {
 				results[i].FTSRank = i + 1
+				results[i].FTSCoverage = termCoverage(terms, results[i].Heading+" "+results[i].Content)
 			}
 			return results, nil
 		}
 	}
 	return nil, nil
+}
+
+// termCoverage returns the fraction of terms that prefix-match a word in text,
+// mirroring the FTS5 "term*" prefix queries. SRE synonym expansions are not
+// credited: coverage measures how much of what the user asked for is present.
+// Terms are unweighted on purpose: IDF can't tell filler from meaning in a
+// technical corpus ("goes" is about as rare here as "electricity").
+func termCoverage(terms []string, text string) float64 {
+	if len(terms) == 0 {
+		return 0
+	}
+	words := embed.TokenizeRaw(text)
+	hit := 0
+	for _, t := range terms {
+		for _, w := range words {
+			if strings.HasPrefix(w, t) {
+				hit++
+				break
+			}
+		}
+	}
+	return float64(hit) / float64(len(terms))
 }
 
 func runFTSQuery(s *Store, ftsQuery, pathPrefix string, limit int) ([]Result, error) {

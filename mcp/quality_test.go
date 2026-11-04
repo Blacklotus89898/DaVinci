@@ -73,11 +73,19 @@ func TestReadKnowledge(t *testing.T) {
 }
 
 func TestScoreLabelORFallbackIsNotStrong(t *testing.T) {
-	or := store.Result{FTSRank: 1}
+	or := store.Result{FTSRank: 1, FTSCoverage: 0.5}
 	if got := scoreLabel(or, false); got != "relevant" {
-		t.Errorf("OR-fallback rank 1 labelled %q, want relevant", got)
+		t.Errorf("OR-fallback rank 1 covering half the terms labelled %q, want relevant", got)
 	}
-	and := store.Result{FTSRank: 1, FTSStrict: true}
+	thin := store.Result{FTSRank: 1, FTSCoverage: 1.0 / 3}
+	if got := scoreLabel(thin, false); got != "weak match" {
+		t.Errorf("OR-fallback rank 1 covering a third of the terms labelled %q, want weak match", got)
+	}
+	out := formatResults([]store.Result{thin}, "q", false)
+	if !strings.Contains(out, "No strong or relevant match") {
+		t.Errorf("all-weak results should say so up front: %q", out)
+	}
+	and := store.Result{FTSRank: 1, FTSStrict: true, FTSCoverage: 1}
 	if got := scoreLabel(and, false); got != "strong match" {
 		t.Errorf("all-terms rank 1 labelled %q, want strong match", got)
 	}

@@ -29,17 +29,20 @@ type ChunkVec struct {
 // the hit came from only one channel), and Cosine is the raw vector similarity
 // when the vector channel produced the hit. FTSStrict reports that the keyword
 // hit matched every query term (the AND query), not just some (OR fallback).
+// FTSCoverage is the fraction of query terms the keyword hit contains: 1 for
+// AND hits, measured per chunk for OR-fallback hits.
 type Result struct {
-	ID        int64
-	Path      string
-	Heading   string
-	Content   string
-	Updated   string
-	Score     float64
-	FTSRank   int
-	FTSStrict bool
-	VecRank   int
-	Cosine    float64
+	ID          int64
+	Path        string
+	Heading     string
+	Content     string
+	Updated     string
+	Score       float64
+	FTSRank     int
+	FTSStrict   bool
+	FTSCoverage float64
+	VecRank     int
+	Cosine      float64
 }
 
 // DocSummary is a brief overview of a document in the knowledge base.

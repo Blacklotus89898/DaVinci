@@ -135,4 +135,7 @@ func TestFTSStrictMarksAndMatchesOnly(t *testing.T) {
 	if got[0].FTSStrict {
 		t.Error("OR-fallback match marked strict")
 	}
+	if got[0].FTSCoverage != 0.5 {
+		t.Errorf("OR-fallback coverage = %v, want 0.5 (electricity yes, unicorn no)", got[0].FTSCoverage)
+	}
 }
