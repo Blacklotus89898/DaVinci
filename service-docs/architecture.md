@@ -83,10 +83,8 @@ sequenceDiagram
 
 ```
 knowledge.db  ←  single SQLite file, portable
-docs/         ←  source markdown (batch-ingested)
-  getting-started.md
-  architecture.md     ← this file
-  tools-guide.md
+service-docs/ ←  docs ABOUT the service (this file, getting-started, tools-guide, decisions/) — not indexed
+docs/         ←  the knowledge corpus itself (batch-ingested); only knowledge lives here
 
 Written at runtime via write_knowledge:
   runbooks/<service>-<symptom>.md   ← incident runbooks
