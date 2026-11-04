@@ -27,3 +27,12 @@ Homelab `build-backstage.yaml` and `validate-pr.yaml` ("Trivy IaC scan", a **req
 
 ### Prevention
 Don't float third-party actions on `@master`. For scanners, prefer a pinned container image over an action that downloads binaries at runtime.
+
+## Where the container fix is applied
+
+As of 2026-11-03, no repo uses trivy-action:
+- Petal `build-petal.yaml`: image scan via `aquasec/trivy:0.70.0 image`.
+- Homelab `build-backstage.yaml`: image scan via `aquasec/trivy:0.70.0 image`, with the docker socket mounted.
+- Homelab `validate-pr.yaml` "Trivy IaC scan" (a required check): `docker run --rm -v "$PWD:/repo" -w /repo aquasec/trivy:0.70.0 config --format sarif --output /repo/trivy-iac.sarif --severity CRITICAL,HIGH --exit-code 0 .`
+
+Homelab PR #10 (merge f12afb4) shipped the last two; every check passed on the PR. To bump Trivy, change the image tag. There is no installer to break.
