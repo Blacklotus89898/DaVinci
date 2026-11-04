@@ -37,3 +37,35 @@ Defined in Homelab `services/petal/observability.yaml`. They're built on Petal's
 **Fix (b5978c5):** the rule only counts failures from the last 3 days (`... > time() - 3 * 86400`), so one-offs age out; recurring pipelines re-arm it on every failed run. For a stale one inside the window, add a narrowly scoped alertmanager silence until it ages out (`alertname=PetalPipelineFailing` + `pipeline=<name>`). Use port-forward `svc/vmalertmanager-vmstack 19093:9093`, then `POST /api/v2/silences`, with `startsAt` = now (`date -u +%FT%TZ`; a future start leaves it `pending`).
 
 **Prevention:** when running throwaway probe pipelines, expect this alert if they fail on purpose, and silence them in the same step.
+
+## PetalMonthlyBacktestMissing and the "petal" ntfy topic
+
+### ntfy topic "petal" (Petal ADR 0008, since 2026-11-03)
+Petal itself posts to ntfy topic `petal` (http://192.168.0.108:30310/petal):
+- **every failed run**, at high priority, with the masked error. Tapping it opens `https://petal.lab.home/?run=<id>`;
+- **successful runs only for pipelines listed in `notify_success`** in Homelab `services/petal/repos-configmap.yaml`. Today that's just `tulip: [backtest]`: the monthly backtest summary arrives as a code-block table.
+
+Canceled runs stay silent. ntfy being down never affects a run (5s timeout, logged, no retry). `PetalPipelineFailing` still pages `homelab-alerts` separately, as the aggregate view.
+
+Changing `notify_success` (or anything else in the ConfigMap) needs a pod restart: bump `petal.io/config-rev` in `services/petal/deployment.yaml` in the same commit.
+
+### PetalMonthlyBacktestMissing
+**Fires when:** no successful `tulip/backtest` run in 33 days (schedule `decl-tulip-backtest-monthly`, 06:41 UTC on the 2nd).
+
+**Check:**
+```sh
+curl -s https://petal.lab.home/api/schedules            # schedule present + next_run_at
+curl -s "https://petal.lab.home/api/runs?repo=tulip&pipeline=backtest&limit=5"
+```
+**Likely causes:**
+- Petal was down at 06:41 on the 2nd. There's no catch-up, so start it by hand.
+- The run failed: the `petal` topic and `PetalPipelineFailing` will also show it. The usual suspect is the Yahoo fetch; see `solutions/dind-mtu-tls-timeout.md` if it's a TLS timeout.
+
+**Run it by hand** (Petal's own API token, from secret `petal-api-token` in ns `petal`):
+```sh
+curl -X POST https://petal.lab.home/api/runs -H "Authorization: Bearer $TOKEN" \
+  -d '{"pipeline":"backtest","repo":"tulip"}'
+```
+
+### Testing failure notifications without a real failure
+Start a run on a branch that doesn't exist, e.g. `{"pipeline":"validate","repo":"homelab","ref":"no-such-branch"}`: the checkout fails cheaply. **Then start a normal `validate` run straight away**, or `PetalPipelineFailing` will page after 5 minutes, because the latest result for `homelab/validate` is now a failure.
