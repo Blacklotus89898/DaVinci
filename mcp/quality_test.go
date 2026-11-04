@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/blacklotus88888/knowledge-service/internal/chunker"
 	"github.com/blacklotus88888/knowledge-service/internal/gitsync"
 	"github.com/blacklotus88888/knowledge-service/internal/store"
 )
@@ -151,5 +152,23 @@ func TestWriteCommitsAndPushesWithGitSync(t *testing.T) {
 	srv.Wait(30 * time.Second)
 	if got := git(remote, "log", "-1", "--format=%s", "main"); got != "docs(kb): delete solutions/x.md" {
 		t.Errorf("remote head after delete = %q", got)
+	}
+}
+
+func TestMatchSectionsSkipsSiblingWithSamePrefix(t *testing.T) {
+	chunks := []chunker.Chunk{
+		{Heading: "Power outage", Content: "a"},
+		{Heading: "Power outage (2)", Content: "b"},
+		{Heading: "Power outage / Verify", Content: "c"},
+		{Heading: "Power outage (no UPS)", Content: "sibling"},
+	}
+	got := matchSections(chunks, "power outage")
+	if len(got) != 3 {
+		t.Fatalf("want section, its part (2) and its subsection; got %+v", got)
+	}
+	for _, c := range got {
+		if c.Content == "sibling" {
+			t.Errorf("sibling heading %q matched", c.Heading)
+		}
 	}
 }

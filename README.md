@@ -71,7 +71,7 @@ claude mcp add knowledge /path/to/knowledge-service \
 
 The `search_knowledge`, `read_knowledge`, `list_knowledge`, `write_knowledge`, `delete_knowledge`, and `get_tool` tools are then available in every Claude Code session.
 
-Optional: add `-e KB_GIT_SYNC=1` (and `-e KB_GIT_BRANCH=main`, the default) so every `write_knowledge` / `delete_knowledge` commits the one file it touched and pushes it in the background. It only commits while the repo is on that branch, so KB writes never land on a feature branch you are developing on; a failed push is logged and `scripts/kb-sync` retries it.
+Optional: add `-e KB_GIT_SYNC=1` (and `-e KB_GIT_BRANCH=main`, the default) so every `write_knowledge` / `delete_knowledge` commits the one file it touched and pushes it in the background. It only commits while the repo is on that branch, so KB writes never land on a feature branch you are developing on; a failed push is logged and `scripts/kb-sync` retries it. Know before enabling: the push is a normal `git push` of the whole branch (unpushed code commits on it go too), and the pull before it uses `--autostash`, so uncommitted edits elsewhere in the tree are stashed and re-applied. Your `core.sshCommand` is kept; BatchMode is added so a missing key fails fast.
 
 ## Wiring into OpenCode
 

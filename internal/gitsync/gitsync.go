@@ -28,6 +28,7 @@ var ErrWrongBranch = errors.New("work tree is not on the sync branch")
 type Syncer struct {
 	dir    string // docs directory; git runs here, so pathspecs are relative to it
 	branch string // only commit when HEAD is this branch
+	sshCmd string // GIT_SSH_COMMAND for network ops ("" = leave git's choice alone)
 }
 
 // New returns a Syncer for dir, which must be inside a git work tree.
@@ -35,6 +36,19 @@ func New(dir, branch string) (*Syncer, error) {
 	s := &Syncer{dir: dir, branch: branch}
 	if _, err := s.git(context.Background(), "rev-parse", "--is-inside-work-tree"); err != nil {
 		return nil, fmt.Errorf("%s is not inside a git work tree: %w", dir, err)
+	}
+	// BatchMode makes an ssh remote without a loaded key fail fast instead of
+	// waiting on a prompt nobody can answer. It is appended to the ssh the
+	// user configured (core.sshCommand — e.g. Windows OpenSSH for ssh-agent),
+	// never substituted for it; an explicit GIT_SSH(_COMMAND) is left alone.
+	if os.Getenv("GIT_SSH_COMMAND") == "" && os.Getenv("GIT_SSH") == "" {
+		ssh, _ := s.git(context.Background(), "config", "--get", "core.sshCommand")
+		if ssh == "" {
+			ssh = "ssh"
+		} else if strings.ContainsAny(ssh, " \t") && !strings.ContainsAny(ssh, `"'`) {
+			ssh = `"` + ssh + `"` // a bare path with spaces
+		}
+		s.sshCmd = ssh + " -o BatchMode=yes"
 	}
 	return s, nil
 }
@@ -87,8 +101,11 @@ func (s *Syncer) Push() error {
 func (s *Syncer) git(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // fixed binary; args are git subcommands plus a validated docs-relative path
 	cmd.Dir = s.dir
-	// Never block on a credential prompt: the MCP server has no terminal.
+	// Never block on a prompt: the MCP server has no terminal.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if s.sshCmd != "" {
+		cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND="+s.sshCmd)
+	}
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	if err := cmd.Run(); err != nil {

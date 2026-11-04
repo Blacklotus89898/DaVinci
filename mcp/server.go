@@ -494,11 +494,30 @@ func matchSections(chunks []chunker.Chunk, heading string) []chunker.Chunk {
 	var out []chunker.Chunk
 	for _, c := range chunks {
 		h := strings.ToLower(c.Heading)
-		if h == want || strings.HasPrefix(h, want+" / ") || strings.HasPrefix(h, want+" (") {
+		if h == want || strings.HasPrefix(h, want+" / ") || isPartOf(h, want) {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+// isPartOf reports whether h is an oversize continuation "want (N)" — and not a
+// sibling heading that merely starts with want ("Power outage (no UPS)").
+func isPartOf(h, want string) bool {
+	rest, ok := strings.CutPrefix(h, want+" (")
+	if !ok {
+		return false
+	}
+	digits, ok := strings.CutSuffix(rest, ")")
+	if !ok || digits == "" {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 type writeArgs struct {
