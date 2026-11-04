@@ -72,6 +72,7 @@ func Ingest(s *Store, docsPath string) error {
 	// embed only chunks whose vector is missing or foreign-dimensioned.
 	s.rebuildVocabAndVectors()
 	s.lru.Purge()
+	s.bumpGeneration()
 	return nil
 }
 
@@ -104,6 +105,7 @@ func IngestOne(s *Store, docsPath, relPath string) error {
 
 	s.rebuildVocabAndVectors()
 	s.lru.Purge()
+	s.bumpGeneration()
 	return nil
 }
 
@@ -149,15 +151,17 @@ func ingestDoc(tx *sql.Tx, doc *pendingDoc) error {
 	}
 
 	for i, ch := range doc.chunks {
-		// vector=NULL on insert; on conflict the vector is dropped only when the
-		// content changed, so unchanged chunks keep their embedding.
+		// vector=NULL on insert; on conflict the vector is dropped and updated_at
+		// bumped only when the chunk changed, so unchanged chunks keep their
+		// embedding and their real last-modified date across re-ingests.
 		if _, err := tx.Exec(
 			`INSERT INTO chunks(doc_id, chunk_idx, heading, content, vector, updated_at)
 			 VALUES(?,?,?,?,NULL,CURRENT_TIMESTAMP)
 			 ON CONFLICT(doc_id, chunk_idx) DO UPDATE SET
 			   heading=excluded.heading,
 			   content=excluded.content,
-			   updated_at=CURRENT_TIMESTAMP,
+			   updated_at=CASE WHEN chunks.content != excluded.content OR chunks.heading != excluded.heading
+			                   THEN CURRENT_TIMESTAMP ELSE COALESCE(chunks.updated_at, CURRENT_TIMESTAMP) END,
 			   vector=CASE WHEN chunks.content != excluded.content THEN NULL ELSE chunks.vector END`,
 			docID, i, ch.Heading, ch.Content,
 		); err != nil {
@@ -181,10 +185,18 @@ func ingestDoc(tx *sql.Tx, doc *pendingDoc) error {
 // buildDoc reads one markdown file into a pendingDoc.
 func buildDoc(root, p, data string) (pendingDoc, error) {
 	tags := chunker.Tags(data)
-	chunks := chunker.Split(data)
+	all := chunker.Split(data)
 	title := ""
-	if len(chunks) > 0 {
-		title = chunks[0].Heading
+	if len(all) > 0 {
+		title = all[0].Heading
+	}
+	// Heading-only sections (typically the "# title" line) carry nothing to
+	// read; indexing them just spends a result slot on an empty hit.
+	chunks := make([]chunker.Chunk, 0, len(all))
+	for _, c := range all {
+		if c.Content != "" {
+			chunks = append(chunks, c)
+		}
 	}
 	if title == "" {
 		title = strings.TrimSuffix(filepath.Base(p), ".md")
@@ -211,12 +223,12 @@ func loadDocs(root string) ([]pendingDoc, error) {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", p, err)
 		}
-		if len(chunker.Split(string(data))) == 0 {
-			return nil
-		}
 		doc, err := buildDoc(root, p, string(data))
 		if err != nil {
 			return err
+		}
+		if len(doc.chunks) == 0 {
+			return nil
 		}
 		docs = append(docs, doc)
 		return nil

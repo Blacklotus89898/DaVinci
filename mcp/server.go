@@ -3,14 +3,19 @@ package mcp
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
 
 	"github.com/blacklotus88888/knowledge-service/internal/chunker"
+	"github.com/blacklotus88888/knowledge-service/internal/gitsync"
 	"github.com/blacklotus88888/knowledge-service/internal/lock"
 	"github.com/blacklotus88888/knowledge-service/internal/store"
 )
@@ -24,6 +29,63 @@ type Server struct {
 	logger   *slog.Logger
 	docsPath string // if non-empty, write_knowledge persists to .md files here
 	version  string
+	git      *gitsync.Syncer // nil unless KB_GIT_SYNC is enabled
+	pushes   sync.WaitGroup  // background pushes still running
+}
+
+// EnableGitSync makes write_knowledge and delete_knowledge commit the file
+// they touched and push it in the background.
+func (srv *Server) EnableGitSync(g *gitsync.Syncer) { srv.git = g }
+
+// Wait blocks until background pushes finish or d elapses. Call it before
+// exiting so a session that ends right after a write still pushes it.
+func (srv *Server) Wait(d time.Duration) {
+	done := make(chan struct{})
+	go func() { srv.pushes.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(d):
+		srv.logger.Warn("exiting with a KB push still running — the next write or scripts/kb-sync pushes it")
+	}
+}
+
+// commitFile commits relPath when git sync is on and returns a short status
+// for the tool reply. Callers hold the write lock, so commits never interleave.
+func (srv *Server) commitFile(relPath, msg string) string {
+	if srv.git == nil {
+		return ""
+	}
+	committed, err := srv.git.Commit(relPath, msg)
+	switch {
+	case errors.Is(err, gitsync.ErrWrongBranch):
+		srv.logger.Info("kb git sync skipped", "reason", err)
+		return " (not committed: work tree is not on " + srv.git.Branch() + ")"
+	case err != nil:
+		srv.logger.Warn("kb git commit failed", "path", relPath, "err", err)
+		return " (not committed: " + err.Error() + ")"
+	case !committed:
+		return ""
+	}
+	srv.pushAsync()
+	return " (committed to " + srv.git.Branch() + ", pushing)"
+}
+
+// pushAsync pushes in the background so a write never waits on the network.
+// It takes the write lock itself because pull --rebase rewrites the docs tree.
+func (srv *Server) pushAsync() {
+	srv.pushes.Add(1)
+	go func() {
+		defer srv.pushes.Done()
+		release, err := lock.Acquire(srv.lockPath())
+		if err != nil {
+			srv.logger.Warn("kb git push skipped — lock busy", "err", err)
+			return
+		}
+		defer release()
+		if err := srv.git.Push(); err != nil {
+			srv.logger.Warn("kb git push failed — scripts/kb-sync retries it", "err", err)
+		}
+	}()
 }
 
 // NewServer creates a Server. docsPath is the markdown source-of-truth directory:
@@ -208,6 +270,26 @@ func toolsList() []map[string]any {
 			},
 		},
 		{
+			"name":        "read_knowledge",
+			"description": "Read the full text of a knowledge document, or one section of it, straight from its markdown source. Use it when a search_knowledge preview is truncated or you need a whole runbook before acting on it. Pass the path (and optionally the heading) exactly as a search result or list_knowledge shows them; a ## heading also returns its ### subsections.",
+			"annotations": map[string]any{"readOnlyHint": true},
+			"inputSchema": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Document path as shown by search_knowledge or list_knowledge, e.g. runbooks/power-outage.md",
+					},
+					"heading": map[string]any{
+						"type":        "string",
+						"description": "Optional section heading (case-insensitive). Omit to read the whole document.",
+					},
+				},
+				"required": []string{"path"},
+			},
+		},
+		{
 			"name":        "write_knowledge",
 			"description": "Persist a knowledge entry as a markdown file and index it for future search. Call this after solving a non-trivial problem, completing an incident, or discovering something non-obvious — so future sessions can find it. Do NOT write ephemeral conversation state, user preferences, or information that is version-specific and will expire quickly. Each call adds or updates one section (## heading) inside the target file; other sections in the same file are preserved. Use ### subsections inside content for structure (e.g. ### Symptom, ### Fix) — internal ## headings are demoted automatically. Scripts and one-liners intended for get_tool must be stored under a tools/ path (e.g. tools/drain-node.md), with the script in a fenced code block.",
 			"annotations": map[string]any{"idempotentHint": true},
@@ -283,6 +365,8 @@ func (srv *Server) handleToolCall(enc *json.Encoder, msg *rpcMessage) {
 		srv.toolSearch(enc, msg.ID, p.Arguments)
 	case "list_knowledge":
 		srv.toolList(enc, msg.ID, p.Arguments)
+	case "read_knowledge":
+		srv.toolRead(enc, msg.ID, p.Arguments)
 	case "write_knowledge":
 		srv.toolWrite(enc, msg.ID, p.Arguments)
 	case "delete_knowledge":
@@ -334,6 +418,89 @@ func (srv *Server) toolSearch(enc *json.Encoder, id json.RawMessage, raw json.Ra
 	})
 }
 
+type readArgs struct {
+	Path    string `json:"path"`
+	Heading string `json:"heading"`
+}
+
+// maxReadChars caps a whole-document read; a section read is never capped.
+const maxReadChars = 24000
+
+func (srv *Server) toolRead(enc *json.Encoder, id json.RawMessage, raw json.RawMessage) {
+	var args readArgs
+	if err := json.Unmarshal(raw, &args); err != nil || args.Path == "" {
+		srv.replyErr(enc, id, -32602, "path is required")
+		return
+	}
+	if srv.docsPath == "" {
+		srv.replyErr(enc, id, -32603, "server misconfigured: DOCS_PATH is not set — markdown files are the only source of truth")
+		return
+	}
+	mdPath := args.Path
+	if !strings.HasSuffix(mdPath, ".md") {
+		mdPath += ".md"
+	}
+	filePath, err := safeFilePath(srv.docsPath, mdPath)
+	if err != nil {
+		srv.replyErr(enc, id, -32602, "invalid path: "+err.Error())
+		return
+	}
+	data, err := os.ReadFile(filePath) //nolint:gosec // path validated by safeFilePath
+	if err != nil {
+		srv.replyErr(enc, id, -32602, fmt.Sprintf("not found: %s — use list_knowledge to see existing paths", mdPath))
+		return
+	}
+
+	if args.Heading == "" {
+		text := string(data)
+		if len(text) > maxReadChars {
+			cut := maxReadChars
+			for cut > 0 && !utf8.RuneStart(text[cut]) {
+				cut--
+			}
+			text = text[:cut] + "\n\n[...document truncated — pass a heading to read one section in full]"
+		}
+		srv.reply(enc, id, map[string]any{
+			"content": []map[string]any{{"type": "text", "text": fmt.Sprintf("Source: %s\n\n%s", mdPath, text)}},
+		})
+		return
+	}
+
+	chunks := chunker.Split(string(data))
+	sections := matchSections(chunks, args.Heading)
+	if len(sections) == 0 {
+		headings := make([]string, 0, len(chunks))
+		for _, c := range chunks {
+			headings = append(headings, c.Heading)
+		}
+		srv.replyErr(enc, id, -32602, fmt.Sprintf("no section %q in %s — headings: %s", args.Heading, mdPath, strings.Join(headings, " | ")))
+		return
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Source: %s\n", mdPath)
+	for _, c := range sections {
+		fmt.Fprintf(&sb, "\n## %s\n\n%s\n", c.Heading, c.Content)
+	}
+	srv.reply(enc, id, map[string]any{
+		"content": []map[string]any{{"type": "text", "text": sb.String()}},
+	})
+}
+
+// matchSections returns the chunks belonging to heading (case-insensitive):
+// the section itself, its "Heading / Sub" subsections and its oversize
+// "Heading (2)" continuation parts — chunker.Split's naming for both.
+func matchSections(chunks []chunker.Chunk, heading string) []chunker.Chunk {
+	want := strings.ToLower(strings.TrimSpace(heading))
+	var out []chunker.Chunk
+	for _, c := range chunks {
+		h := strings.ToLower(c.Heading)
+		if h == want || strings.HasPrefix(h, want+" / ") || strings.HasPrefix(h, want+" (") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 type writeArgs struct {
 	Path    string `json:"path"`
 	Heading string `json:"heading"`
@@ -381,6 +548,10 @@ func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.Raw
 	if err == nil {
 		err = store.IngestOne(srv.store, srv.docsPath, mdPath)
 	}
+	var gitNote string
+	if err == nil {
+		gitNote = srv.commitFile(mdPath, fmt.Sprintf("docs(kb): %s — %s", mdPath, args.Heading))
+	}
 	release()
 
 	if err != nil {
@@ -391,7 +562,7 @@ func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.Raw
 	srv.reply(enc, id, map[string]any{
 		"content": []map[string]any{{
 			"type": "text",
-			"text": fmt.Sprintf("Saved to knowledge base: %s / %s", mdPath, args.Heading),
+			"text": fmt.Sprintf("Saved to knowledge base: %s / %s%s", mdPath, args.Heading, gitNote),
 		}},
 	})
 }
@@ -584,9 +755,13 @@ func (srv *Server) toolDelete(enc *json.Encoder, id json.RawMessage, raw json.Ra
 	// the file is still removed (a leftover would be re-ingested on next startup).
 	n, dbErr := srv.store.DeleteDocument(mdPath)
 	fileErr := os.Remove(filePath)
+	fileExisted := fileErr == nil
+	var gitNote string
+	if fileExisted {
+		gitNote = srv.commitFile(mdPath, "docs(kb): delete "+mdPath)
+	}
 	release()
 
-	fileExisted := fileErr == nil
 	if fileErr != nil && !os.IsNotExist(fileErr) {
 		// Hard error: if the file remains on disk, Ingest will resurrect it on next startup.
 		srv.logger.Error("could not remove markdown file", "path", filePath, "err", fileErr)
@@ -608,6 +783,7 @@ func (srv *Server) toolDelete(enc *json.Encoder, id json.RawMessage, raw json.Ra
 	default:
 		sb.WriteString(" (file deleted, no index entries existed)")
 	}
+	sb.WriteString(gitNote)
 
 	srv.reply(enc, id, map[string]any{
 		"content": []map[string]any{{"type": "text", "text": sb.String()}},
@@ -779,14 +955,16 @@ const maxPreviewChars = 1500
 // rank and raw cosine similarity — rather than the fused RRF score, which is
 // tiny by construction and would label every vector-only hit "weak".
 // neural selects cosine thresholds for real embeddings; TF-IDF similarities
-// run lower, so its thresholds are more permissive.
+// run lower, so its thresholds are more permissive. A top keyword rank counts
+// as strong only when every query term matched: the OR fallback ranks a chunk
+// that shares one common word ("what", "do") just as high.
 func scoreLabel(r store.Result, neural bool) string {
 	strongCos, relCos := 0.60, 0.35
 	if !neural {
 		strongCos, relCos = 0.45, 0.25
 	}
 	switch {
-	case (r.FTSRank > 0 && r.FTSRank <= 3) || r.Cosine >= strongCos:
+	case (r.FTSStrict && r.FTSRank > 0 && r.FTSRank <= 3) || r.Cosine >= strongCos:
 		return "strong match"
 	case r.FTSRank > 0 || r.Cosine >= relCos:
 		return "relevant"
@@ -821,7 +999,11 @@ func formatResults(results []store.Result, query string, neural bool) string {
 			if idx := strings.LastIndexByte(preview[:cut], ' '); idx > cut-60 {
 				cut = idx
 			}
-			preview = preview[:cut] + "\n[...truncated — search with narrower terms for full context]"
+			// Never split a multi-byte rune (docs are full of — and →).
+			for cut > 0 && !utf8.RuneStart(preview[cut]) {
+				cut--
+			}
+			preview = preview[:cut] + fmt.Sprintf("\n[...truncated — read_knowledge(path=%q, heading=%q) returns the full section]", r.Path, r.Heading)
 		}
 		fmt.Fprintf(&sb, "%s\n\n", preview)
 	}

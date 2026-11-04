@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/blacklotus88888/knowledge-service/internal/embed"
+	"github.com/blacklotus88888/knowledge-service/internal/gitsync"
 	"github.com/blacklotus88888/knowledge-service/internal/lock"
 	"github.com/blacklotus88888/knowledge-service/internal/store"
 	"github.com/blacklotus88888/knowledge-service/mcp"
@@ -97,6 +98,17 @@ func main() {
 
 	srv := mcp.NewServer(db, logger, docsPath, version)
 
+	// Optional: commit + push every KB write so the git remote (other devices,
+	// Warden) never lags. Only commits while the repo is on KB_GIT_BRANCH.
+	if env("KB_GIT_SYNC", "") == "1" {
+		if g, err := gitsync.New(docsPath, env("KB_GIT_BRANCH", "main")); err != nil {
+			logger.Warn("KB_GIT_SYNC set but git sync unavailable", "err", err)
+		} else {
+			srv.EnableGitSync(g)
+			logger.Info("kb git sync enabled", "branch", g.Branch())
+		}
+	}
+
 	if *httpAddr != "" {
 		// HTTP mode benefits from concurrent readers; WAL supports multiple connections.
 		db.SetMaxConns(4)
@@ -109,6 +121,7 @@ func main() {
 		logger.Error("server error", "err", err)
 		os.Exit(1)
 	}
+	srv.Wait(30 * time.Second) // let a push started by the last write finish
 }
 
 func runHTTP(srv *mcp.Server, db *store.Store, logger *slog.Logger, addr string) {
