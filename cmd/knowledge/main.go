@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/blacklotus88888/knowledge-service/internal/config"
 	"github.com/blacklotus88888/knowledge-service/internal/embed"
 	"github.com/blacklotus88888/knowledge-service/internal/store"
 )
@@ -15,6 +16,10 @@ func main() {
 		usage()
 	}
 
+	// Same resolution as the server: env > <install>/knowledge.env > install defaults.
+	if _, _, err := config.ApplyForExecutable(); err != nil {
+		fatalf("settings: %v", err)
+	}
 	dbPath := getenv("DB_PATH", "knowledge.db")
 
 	db, err := store.Open(dbPath)

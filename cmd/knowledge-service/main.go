@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/blacklotus88888/knowledge-service/internal/config"
 	"github.com/blacklotus88888/knowledge-service/internal/embed"
 	"github.com/blacklotus88888/knowledge-service/internal/gitsync"
 	"github.com/blacklotus88888/knowledge-service/internal/lock"
@@ -30,16 +31,26 @@ func main() {
 	httpAddr := flag.String("http", "", "Start HTTP server on this address (e.g. :3737). Default: stdio MCP mode.")
 	flag.Parse()
 
+	// Settings: process env (e.g. MCP registration -e flags) > <install>/knowledge.env
+	// > install-relative defaults (<install>/docs, <install>/knowledge.db). Never
+	// the caller's cwd, so the registration can be just the executable path.
+	root, applied, cfgErr := config.ApplyForExecutable()
+
 	dbPath := env("DB_PATH", "knowledge.db")
-	// DOCS_PATH is required: markdown files are the source of truth and the DB is
-	// a derived index. There is deliberately no default — a relative default would
-	// silently resolve against whatever directory each client session starts in.
 	docsPath := os.Getenv("DOCS_PATH")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: logLevel(env("LOG_LEVEL", "info")),
 	}))
+	if cfgErr != nil {
+		logger.Error("bad settings file", "err", cfgErr)
+		os.Exit(1)
+	}
+	for _, a := range applied {
+		logger.Info("setting", "key", a.Key, "value", a.Value, "from", a.From)
+	}
 	if docsPath == "" {
-		logger.Error("DOCS_PATH is required — set it to your knowledge markdown directory (absolute path recommended)")
+		logger.Error("DOCS_PATH is unset and no docs/ directory next to the install — set it in the environment or in "+
+			filepath.Join(root, config.FileName), "install_root", root)
 		os.Exit(1)
 	}
 	if abs, err := filepath.Abs(docsPath); err == nil {

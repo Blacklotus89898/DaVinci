@@ -35,18 +35,28 @@ Write-Host "==> indexing $((Get-ChildItem $Docs -Recurse -Filter *.md).Count) do
 Write-Host "==> smoke test: search 'disk pressure'"
 .\bin\knowledge.exe search 'disk pressure' 2>$null | Select-Object -First 5
 
+# Per-device settings live in knowledge.env next to bin/ (the binaries find it
+# themselves), NOT in the MCP registration — re-registering can't drop them.
+$EnvFile = Join-Path $Repo 'knowledge.env'
+if (-not (Test-Path $EnvFile)) {
+    $lines = @('# knowledge-service settings (see knowledge.env.example)', 'LOG_LEVEL=warn')
+    if ($Provider) { $lines += 'EMBED_PROVIDER=ollama' }
+    Set-Content -Path $EnvFile -Value $lines -Encoding utf8NoBOM
+    Write-Host "==> wrote $EnvFile"
+} else {
+    Write-Host "==> keeping existing $EnvFile"
+}
+
 if (-not $NoMcp) {
+    $Exe = Join-Path $Repo 'bin\knowledge-service.exe'
     if (Get-Command claude -ErrorAction SilentlyContinue) {
-        Write-Host "==> registering MCP server 'knowledge' (user scope)"
+        Write-Host "==> registering MCP server 'knowledge' (user scope, no -e flags)"
         claude mcp remove knowledge -s user 2>$null | Out-Null
-        $mcpArgs = @('mcp', 'add', 'knowledge', (Join-Path $Repo 'bin\knowledge-service.exe'),
-            '-e', "DB_PATH=$Db", '-e', "DOCS_PATH=$Docs", '-e', 'LOG_LEVEL=warn', '--scope', 'user')
-        if ($Provider) { $mcpArgs += @('-e', 'EMBED_PROVIDER=ollama', '-e', 'EMBED_MODEL=nomic-embed-text') }
-        & claude @mcpArgs
+        claude mcp add knowledge $Exe --scope user
         claude mcp get knowledge | Select-String 'Status|Command'
     } else {
         Write-Host '==> Claude Code CLI not found — register later with:'
-        Write-Host "    claude mcp add knowledge `"$Repo\bin\knowledge-service.exe`" -e DB_PATH=`"$Db`" -e DOCS_PATH=`"$Docs`" --scope user"
+        Write-Host "    claude mcp add knowledge `"$Exe`" --scope user"
     }
 }
 

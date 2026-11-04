@@ -39,18 +39,27 @@ DB_PATH="$DB" DOCS_PATH="$DOCS" EMBED_PROVIDER="$PROVIDER" "bin/knowledge$ext" i
 echo "==> smoke test: search 'disk pressure'"
 DB_PATH="$DB" EMBED_PROVIDER="$PROVIDER" "bin/knowledge$ext" search "disk pressure" 2>/dev/null | head -5
 
+# Per-device settings live in knowledge.env next to bin/ (the binaries find it
+# themselves), NOT in the MCP registration — re-registering can't drop them.
+ENVFILE="$REPO/knowledge.env"
+if [ ! -f "$ENVFILE" ]; then
+  { echo "# knowledge-service settings (see knowledge.env.example)"; echo "LOG_LEVEL=warn"
+    if [ -n "$PROVIDER" ]; then echo "EMBED_PROVIDER=ollama"; fi; } > "$ENVFILE"
+  echo "==> wrote $ENVFILE"
+else
+  echo "==> keeping existing $ENVFILE"
+fi
+
 if [ "$REGISTER" = 1 ]; then
+  EXE="$REPO/bin/knowledge-service$ext"
   if command -v claude >/dev/null; then
-    echo "==> registering MCP server 'knowledge' (user scope)"
+    echo "==> registering MCP server 'knowledge' (user scope, no -e flags)"
     claude mcp remove knowledge -s user >/dev/null 2>&1 || true
-    set -- claude mcp add knowledge "$REPO/bin/knowledge-service$ext" \
-      -e "DB_PATH=$DB" -e "DOCS_PATH=$DOCS" -e LOG_LEVEL=warn --scope user
-    [ -n "$PROVIDER" ] && set -- "$@" -e EMBED_PROVIDER=ollama -e EMBED_MODEL=nomic-embed-text
-    "$@"
+    claude mcp add knowledge "$EXE" --scope user
     claude mcp get knowledge | grep -E "Status|Command" || true
   else
     echo "==> Claude Code CLI not found — register later with:"
-    echo "    claude mcp add knowledge \"$REPO/bin/knowledge-service$ext\" -e DB_PATH=\"$DB\" -e DOCS_PATH=\"$DOCS\" --scope user"
+    echo "    claude mcp add knowledge \"$EXE\" --scope user"
   fi
 fi
 

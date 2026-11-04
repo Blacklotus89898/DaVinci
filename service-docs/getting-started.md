@@ -30,14 +30,9 @@ EMBED_PROVIDER=ollama bin/knowledge.exe ingest
 # 4. Try a search
 EMBED_PROVIDER=ollama bin/knowledge.exe search "pod keeps crashing"
 
-# 5. Wire into Claude Code (global, persists across sessions)
-claude mcp add knowledge /path/to/knowledge-service.exe \
-  -e DB_PATH=/path/to/knowledge.db \
-  -e DOCS_PATH=/path/to/docs \
-  -e EMBED_PROVIDER=ollama \
-  -e EMBED_MODEL=nomic-embed-text \
-  -e LOG_LEVEL=warn \
-  --scope user
+# 5. Per-device settings, then wire into Claude Code (no -e flags needed)
+cp knowledge.env.example knowledge.env
+claude mcp add knowledge /path/to/DaVinci/bin/knowledge-service.exe --scope user
 ```
 
 ## Document Format
@@ -48,9 +43,13 @@ each chunk is retrieved independently.
 
 ## Environment Variables
 
+Set them in `<repo>/knowledge.env` (found from the executable's own path; see
+`knowledge.env.example`) or the environment — the environment wins.
+
 | Variable | Default | Description |
 |---|---|---|
-| `DB_PATH` | `knowledge.db` | Path to the SQLite database |
+| `DB_PATH` | `<install>/knowledge.db` | Path to the SQLite database |
+| `DOCS_PATH` | `<install>/docs` | Markdown source of truth (`<install>` = the repo when the exe is in `bin/`) |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `EMBED_PROVIDER` | _(TF-IDF)_ | Set to `ollama` to use Ollama for semantic embeddings |
 | `EMBED_URL` | `http://localhost:11434` | Ollama base URL |
@@ -61,13 +60,11 @@ each chunk is retrieved independently.
 ## Wiring into Claude Code
 
 ```bash
-claude mcp add knowledge "C:\path\to\knowledge-service.exe" \
-  -e DB_PATH="C:\path\to\knowledge.db" \
-  -e EMBED_PROVIDER=ollama \
-  -e EMBED_MODEL=nomic-embed-text \
-  -e LOG_LEVEL=warn \
-  --scope user
+claude mcp add knowledge "C:\path\to\DaVinci\bin\knowledge-service.exe" --scope user
 ```
+
+Settings live in `knowledge.env`, not in the registration, so re-registering can't drop
+them. To change one, edit the file and restart the session.
 
 Restart Claude Code. The `search_knowledge`, `list_knowledge`, `write_knowledge`, `delete_knowledge`, and `get_tool` tools are available in every session.
 
