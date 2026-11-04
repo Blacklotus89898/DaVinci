@@ -1,20 +1,29 @@
+# build must work from PowerShell, where make runs recipes through cmd.exe:
+# no `mkdir -p`, no `find` (cmd's FIND searches text), no `2>/dev/null`, and
+# Windows binaries need .exe — the MCP registration runs knowledge-service.exe.
+ifeq ($(OS),Windows_NT)
+EXE := .exe
+endif
+
 BINDIR   := bin
-SERVICE  := $(BINDIR)/knowledge-service
-CLI      := $(BINDIR)/knowledge
+SERVICE  := $(BINDIR)/knowledge-service$(EXE)
+CLI      := $(BINDIR)/knowledge$(EXE)
 DB_PATH  ?= knowledge.db
 DOCS_PATH ?= docs
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION  ?= $(or $(shell git describe --tags --always --dirty),dev)
+LIB_SRC  := $(wildcard internal/*/*.go)
 
 .PHONY: build install ingest clean tidy lint test
 
 build: $(SERVICE) $(CLI)
 
-$(SERVICE): go.sum $(shell find cmd/knowledge-service internal mcp -name '*.go' 2>/dev/null)
-	@mkdir -p $(BINDIR)
+$(BINDIR):
+	mkdir $(BINDIR)
+
+$(SERVICE): go.sum $(wildcard cmd/knowledge-service/*.go mcp/*.go) $(LIB_SRC) | $(BINDIR)
 	go build -ldflags="-s -w -X main.version=$(VERSION)" -o $@ ./cmd/knowledge-service
 
-$(CLI): go.sum $(shell find cmd/knowledge internal -name '*.go' 2>/dev/null)
-	@mkdir -p $(BINDIR)
+$(CLI): go.sum $(wildcard cmd/knowledge/*.go) $(LIB_SRC) | $(BINDIR)
 	go build -ldflags="-s -w -X main.version=$(VERSION)" -o $@ ./cmd/knowledge
 
 go.sum: go.mod
