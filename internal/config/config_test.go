@@ -30,7 +30,7 @@ func TestRoot(t *testing.T) {
 func TestDefaultsFromInstallRoot(t *testing.T) {
 	clearEnv(t, keys...)
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "docs"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, "docs"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Apply(root); err != nil {
@@ -47,7 +47,8 @@ func TestDefaultsFromInstallRoot(t *testing.T) {
 func TestEnvFileFillsOnlyWhatTheEnvironmentLacks(t *testing.T) {
 	clearEnv(t, keys...)
 	root := t.TempDir()
-	file := "# per-device settings\nexport EMBED_PROVIDER=ollama\nKB_GIT_SYNC=\"1\"\nDOCS_PATH=notes\nDB_PATH=/abs/k.db\n"
+	absDB := filepath.Join(t.TempDir(), "k.db") // absolute on every OS
+	file := "# per-device settings\nexport EMBED_PROVIDER=ollama\nKB_GIT_SYNC=\"1\"\nDOCS_PATH=notes\nDB_PATH=" + absDB + "\n"
 	if err := os.WriteFile(filepath.Join(root, FileName), []byte(file), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -62,10 +63,7 @@ func TestEnvFileFillsOnlyWhatTheEnvironmentLacks(t *testing.T) {
 		"EMBED_PROVIDER": "tfidf-override",             // env wins
 		"KB_GIT_SYNC":    "1",                          // quotes stripped
 		"DOCS_PATH":      filepath.Join(root, "notes"), // relative to the file
-		"DB_PATH":        "/abs/k.db",
-	}
-	if filepath.IsAbs("/abs/k.db") == false { // Windows: no drive → relative
-		want["DB_PATH"] = filepath.Join(root, "/abs/k.db")
+		"DB_PATH":        absDB,                        // absolute kept as-is
 	}
 	for k, v := range want {
 		if got := os.Getenv(k); got != v {
