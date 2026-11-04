@@ -27,3 +27,13 @@ Defined in Homelab `services/petal/observability.yaml`. They're built on Petal's
   - If it's missing: the config wasn't synced. Petal only syncs at startup, so restart the pod after a ConfigMap edit (`kubectl -n petal rollout restart deploy/petal`).
   - If it's present: was Petal down at 03:17? A missed minute is skipped, not caught up. Or did the run fail? Then PetalPipelineFailing fires too.
   - Manual run: Backstage → "Run a Petal pipeline" → homelab-platform → `validate`.
+
+## PetalPipelineFailing stuck on a pipeline that will never run again
+
+**Symptom:** PetalPipelineFailing keeps firing for a pipeline that only existed on a deleted branch or was a one-off test (2026-10-25: `probe-docker`, a deliberate ADR 0006 refusal test).
+
+**Root cause:** the rule fires while a pipeline's latest finished run failed. The metrics come from Petal's run registry (they survive restarts), so a pipeline that can't run again stays "latest = failed" forever.
+
+**Fix (b5978c5):** the rule only counts failures from the last 3 days (`... > time() - 3 * 86400`), so one-offs age out; recurring pipelines re-arm it on every failed run. For a stale one inside the window, add a narrowly scoped alertmanager silence until it ages out (`alertname=PetalPipelineFailing` + `pipeline=<name>`). Use port-forward `svc/vmalertmanager-vmstack 19093:9093`, then `POST /api/v2/silences`, with `startsAt` = now (`date -u +%FT%TZ`; a future start leaves it `pending`).
+
+**Prevention:** when running throwaway probe pipelines, expect this alert if they fail on purpose, and silence them in the same step.

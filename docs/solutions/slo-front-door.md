@@ -29,3 +29,15 @@ Front-door SLO monitoring: blackbox-exporter probes the six in-cluster service e
 ### Related
 - solutions/ntfy-alert-pipeline.md (the paging path these alerts ride)
 - solutions/uptime-kuma.md (external prober — complementary scope)
+
+## Hard-down alert must use max_over_time, not min_over_time (fixed 2026-10-25)
+
+**Symptom:** critical `SloFrontDoorDown` pages for ~30-second blips (every Petal deploy, a one-minute linkding miss), even though the alert claims "probe_success is 0 across the last 2 minutes".
+
+**Root cause:** `min_over_time(probe_success[2m]) == 0` is true when ANY sample in the window is 0, i.e. one failed probe. "No successful probe in the window" is `max_over_time(probe_success[2m]) == 0`.
+
+**Fix (f6f4fdb):** `SloFrontDoorDown` → `max_over_time(probe_success[2m]) == 0`; `StagingFrontDoorDown` → `max_over_time(probe_success{job="staging-front-doors"}[5m]) == 0`. A 7-day replay showed 23 pages under the old form against 9 under the new one, and all 9 were real outages. Short blips still spend error budget and show up in the burn-rate alerts.
+
+**Verify loaded rules:** vmalert doesn't answer on localhost inside its pod. Use `kubectl -n monitoring port-forward svc/vmalert-vmstack 18880:8080` and `curl localhost:18880/api/v1/rules`.
+
+**Rule of thumb:** "true for the WHOLE window" = `min_over_time(x[w]) > 0` (e.g. PetalQueueStuck: runs queued the entire 30m) or `max_over_time(x[w]) == 0` (never succeeded). `min_over_time(x[w]) == 0` means "was 0 at least once": almost never what a hard-down page wants.
