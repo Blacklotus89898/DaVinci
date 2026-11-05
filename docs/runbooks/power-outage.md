@@ -45,7 +45,8 @@ kubectl -n tulip get pods; kubectl -n warden get pods
 Known cold-boot behaviour:
 - **petal dind** crash-restarts 2–3 times, then self-heals.
 - **istio-cni / ztunnel** restart a few times on node boot.
-- **NetworkManager-wait-online** fails on the worker because the second NIC enp6s19 on vmbr3 has no link. It adds about 30s and nothing else.
+- **Worker came up with no network (2026-11-04):** the VM had a second, unused NIC (enp6s19 on vmbr3), and its only NetworkManager profile ("Wired connection 1") wasn't bound to an interface, so NM brought up the wrong card. With the worker offline, **every app is down**: `debian` is cordoned (since 2026-03), so nothing can reschedule there. Fixed by removing the second NIC in Proxmox (VM 104 → Hardware). If it recurs: open the VM console, run `nmcli con show`, and bind the profile with `nmcli con mod "Wired connection 1" connection.interface-name <nic>`.
+- **Pi-hole answers slowly right after boot**, so `.home` names fail for a few minutes. Use IPs instead: Proxmox 192.168.0.115:8006, worker 192.168.0.108, debian 192.168.0.112.
 - **Root app health wedge:** see runbooks/argocd-app-of-apps-wedge.md.
 - **Glance:** container restart policy is unless-stopped, and it resolves through Pi-hole 192.168.0.53.
 - **ubuntu.home:** minikube container is restart=no, so it stays down until someone runs `minikube start`.

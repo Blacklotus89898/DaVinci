@@ -18,5 +18,5 @@
 
 ## After the incident
 1. Declare resolved once impact stops, not once root cause is fully understood.
-2. Write a postmortem within 48 hours using `guides/postmortem-template.md`.
+2. Write a postmortem within 48 hours using `runbooks/postmortem-template.md` (the homelab-tailored one; the generic SEV-style template was retired).
 3. Call `write_knowledge` with the runbook — symptom, root cause, fix, prevention — so the next on-call doesn't repeat the investigation.
