@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.2.5](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.4...knowledge-service-v0.2.5) (2026-11-05)
+
+
+### Features
+
+* **mcp:** locked markdown-only writes, exact get_tool, scoped search ([3a7ee7f](https://github.com/Blacklotus89898/DaVinci/commit/3a7ee7f8a30cd290f5bbbd6d46c82a48ebce7bbe))
+* read_knowledge, opt-in git sync, cross-session cache refresh; search quality fixes ([aa529b3](https://github.com/Blacklotus89898/DaVinci/commit/aa529b3680abc327c061baefe0d384a7fd8f2dfd))
+* read_knowledge, opt-in git sync, cross-session cache refresh; search quality fixes ([35f8b13](https://github.com/Blacklotus89898/DaVinci/commit/35f8b13e8bcbb2ff933bbb6b084ceff237cfd14a))
+* **scripts:** one-shot setup + git-based KB sync for new devices ([2efb56a](https://github.com/Blacklotus89898/DaVinci/commit/2efb56a6ad5ceec52e974dfd91089d2d6f23d548))
+* **store:** incremental ingest, provider-safe vectors, tags and updated_at (schema v2) ([fb85358](https://github.com/Blacklotus89898/DaVinci/commit/fb8535806952475e47ca5c908f717e21a310ef04))
+
+
+### Bug Fixes
+
+* **build:** make build works from PowerShell and writes the .exe ([f1b05ab](https://github.com/Blacklotus89898/DaVinci/commit/f1b05ab9ee01f1783f06fa999ab7f8efa5882651))
+* **build:** make build works from PowerShell and writes the .exe ([5f1c2d1](https://github.com/Blacklotus89898/DaVinci/commit/5f1c2d176b35ff11b9bcb312b252c91b9c894359))
+* **gitsync:** keep the configured ssh, add BatchMode; exact continuation-part match in read_knowledge ([41bd2ff](https://github.com/Blacklotus89898/DaVinci/commit/41bd2ff554f9495931cc1d4c1e0af02b79d6c5b0))
+* **search:** label thin OR-fallback hits weak instead of relevant ([8cacf3e](https://github.com/Blacklotus89898/DaVinci/commit/8cacf3e9bb634a5eeb5586ed4f1e46df49414f3f))
+* **search:** label thin OR-fallback hits weak instead of relevant ([f753f07](https://github.com/Blacklotus89898/DaVinci/commit/f753f07ae79af51bc5b558d797ee932df28a49ba))
+* self-locating config — knowledge.env + install-relative defaults ([b977a8d](https://github.com/Blacklotus89898/DaVinci/commit/b977a8da2eedfcb4cc5dd7244223986cc3eec306))
+* self-locating config — knowledge.env + install-relative defaults ([43f1680](https://github.com/Blacklotus89898/DaVinci/commit/43f16802ac8add04a90f903a4c233cd67d1bfaa3))
+
 ## [0.2.4](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.3...knowledge-service-v0.2.4) (2026-08-02)
 
 
