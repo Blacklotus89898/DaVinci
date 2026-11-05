@@ -1,4 +1,4 @@
-# knowledge-service
+# DaVinci (knowledge-service)
 
 A lightweight MCP server that gives AI assistants a persistent, searchable knowledge base backed by **plain markdown files**.
 
