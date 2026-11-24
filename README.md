@@ -1,5 +1,7 @@
 # DaVinci (knowledge-service)
 
+[![CI](https://github.com/Blacklotus89898/DaVinci/actions/workflows/ci.yml/badge.svg)](https://github.com/Blacklotus89898/DaVinci/actions/workflows/ci.yml)
+
 A lightweight MCP server that gives AI assistants a persistent, searchable knowledge base backed by **plain markdown files**.
 
 Write runbooks, solutions, and one-liners into it from conversations — they land as `.md` files in `docs/` that you can read, edit, and `git diff`. The SQLite DB is a derived search index rebuilt automatically on every startup.
@@ -250,7 +252,7 @@ The binary is ~14 MB, statically linked, no CGo required.
 go test -race ./...
 ```
 
-64 tests across chunker, embed, store, cache, and mcp packages.
+Covers the chunker, embedding, store, cache, config, git-sync, lock and MCP packages, plus search-quality tests over a fixture corpus.
 
 ## Known Limitations
 
@@ -262,7 +264,7 @@ go test -race ./...
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, dev workflow, and how to add a new embedding provider.
+Start with [AGENTS.md](AGENTS.md) — the guide for humans and coding agents: commands, layout, non-negotiables, and the rules for *using* the knowledge tools (other repos point there). [CONTRIBUTING.md](CONTRIBUTING.md) covers local setup and adding an embedding provider; [service-docs/architecture.md](service-docs/architecture.md) the internals.
 
 ## License
 
