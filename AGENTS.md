@@ -1,4 +1,38 @@
-# Agent Instructions
+# AGENTS.md — DaVinci (knowledge-service)
+
+Guide for any coding agent (Claude Code, Codex, Cursor, Copilot, Gemini…) and human contributor.
+Two parts: **developing this repo** (below), and **using the knowledge tools** (the rest of this
+file — other repos, e.g. Homelab, point here for those rules).
+
+## Developing this repo
+
+Go MCP server: a persistent markdown knowledge base with hybrid search (FTS5 BM25 + Ollama
+`nomic-embed-text` vectors, merged via RRF; TF-IDF fallback). `docs/` is both the corpus and the
+source of truth; `knowledge.db` is a derived index. Architecture: `README.md`,
+`service-docs/architecture.md`; contributor details: `CONTRIBUTING.md`.
+
+```bash
+make build            # bin/knowledge-service + bin/knowledge (or: pwsh scripts/setup.ps1 / sh scripts/setup.sh)
+make test             # go test -race ./...  — must stay green
+make lint             # golangci-lint run ./...
+go vet ./...
+make ingest           # rebuild the index from docs/ (stop live servers first if EMBED_* changed)
+```
+
+Layout: `cmd/knowledge-service` (MCP stdio + HTTP), `cmd/knowledge` (CLI), `internal/{store,chunker,embed,cache,config,gitsync,lock}`,
+`mcp/` (JSON-RPC server + tool definitions), `scripts/` (setup, kb-sync), `docs/` (the corpus).
+
+Non-negotiables:
+- `docs/` is the source of truth; never hand-edit `knowledge.db` or make correctness depend on it.
+- Search degrades, the index never does: provider failures fall back to TF-IDF without overwriting stored vectors.
+- Settings are self-located (env → `<repo>/knowledge.env` → defaults); never resolve paths from the caller's cwd.
+- Writes stay serialized through `.knowledge.lock`; KB git-sync only commits on the configured branch.
+- Releases via release-please — conventional commits, never hand-tag.
+
+Adding a feature: branch `feat/<topic>` → tests (with `-race`) → `go vet` + lint → PR using the
+template, conventional title. New MCP tool: define it in `mcp/`, test it in `mcp/server_test.go`,
+document it in the README tools table and in the tool table below. New embedding provider: see
+`CONTRIBUTING.md`. Corpus-only changes (`docs/**`) may go straight to `main` via `scripts/kb-sync`.
 
 ## Knowledge Base — Use These Tools
 
