@@ -30,4 +30,4 @@ ss -tnp | grep firefox                                # per-pid sockets
 ### Status (2026-11-24)
 - Re-diagnosed: same clamp (~800 MHz on battery; `platform_profile=low-power`, EPP=`power` from `/etc/tlp.conf`).
 - **User `blacklotus` is NOT in sudoers** (in `wheel`, but wheel isn't enabled in sudoers) → `sudo` fails; `!`-prefixed commands in Claude Code have no TTY either. Use `run0 <cmd>` (polkit, own password) or `su -c` in a real terminal.
-- Fix script (TLP battery → `balanced` / `balance_power`, plus `Restart=on-failure` drop-ins for `reflector` and `archlinux-keyring-wkd-sync`, which fail at boot on DNS-not-ready): apply with `run0 bash perf-fix.sh`. Verify: `cat /sys/firmware/acpi/platform_profile` on battery → `balanced`.
+- Fix script (TLP battery → `balanced` / `balance_power`, plus `Restart=on-failure` drop-ins for `reflector` and `archlinux-keyring-wkd-sync`, which fail at boot on DNS-not-ready): apply with `run0 bash ~/dotfiles/system/perf-fix.sh`. Verify: `cat /sys/firmware/acpi/platform_profile` on battery → `balanced`.
