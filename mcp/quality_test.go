@@ -81,7 +81,7 @@ func TestScoreLabelORFallbackIsNotStrong(t *testing.T) {
 	if got := scoreLabel(thin, false); got != "weak match" {
 		t.Errorf("OR-fallback rank 1 covering a third of the terms labelled %q, want weak match", got)
 	}
-	out := formatResults([]store.Result{thin}, "q", false)
+	out := formatResults([]store.Result{thin}, "q", false, nil)
 	if !strings.Contains(out, "No strong or relevant match") {
 		t.Errorf("all-weak results should say so up front: %q", out)
 	}
@@ -93,7 +93,7 @@ func TestScoreLabelORFallbackIsNotStrong(t *testing.T) {
 
 func TestPreviewTruncationKeepsValidUTF8(t *testing.T) {
 	content := strings.Repeat("—→", maxPreviewChars) // multi-byte, no spaces
-	out := formatResults([]store.Result{{Path: "a.md", Heading: "H", Content: content}}, "q", false)
+	out := formatResults([]store.Result{{Path: "a.md", Heading: "H", Content: content}}, "q", false, nil)
 	if !utf8.ValidString(out) {
 		t.Fatal("truncated preview split a multi-byte rune")
 	}

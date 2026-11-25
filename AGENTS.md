@@ -55,6 +55,8 @@ document it in the README tools table and in the tool table below. New embedding
 - Exact terms score highest via BM25; paraphrases and synonyms are caught by the semantic channel
 - Prefix matching is on: `kube` hits `kubernetes`, `argo` hits `argocd`
 - SRE synonym expansion: `OOMKilled` → also matches `oom`; `CrashLoopBackOff` → `crashloop`; `eviction/drain` → `evict`
+- A result tagged `⚠ possibly stale` / `⚠ never verified` describes code that moved since a human checked it — confirm against the code before acting on it
+- Paths under a mount prefix (e.g. `csus/`) are read-only team docs: propose changes as a PR in that repo, not via `write_knowledge`
 - `get_tool("drain node")` matches `tools/drain-node.md` **exactly** (spaces → hyphens); fuzzy search over `tools/` is only the fallback
 
 ## Workflow

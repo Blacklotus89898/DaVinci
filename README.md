@@ -79,6 +79,27 @@ The `search_knowledge`, `read_knowledge`, `list_knowledge`, `write_knowledge`, `
 
 Optional: set `KB_GIT_SYNC=1` (and `KB_GIT_BRANCH=main`, the default) in `knowledge.env` so every `write_knowledge` / `delete_knowledge` commits the one file it touched and pushes it in the background. It only commits while the repo is on that branch, so KB writes never land on a feature branch you are developing on; a failed push is logged and `scripts/kb-sync` retries it. Know before enabling: the push is a normal `git push` of the whole branch (unpushed code commits on it go too), and the pull before it uses `--autostash`, so uncommitted edits elsewhere in the tree are stashed and re-applied. Your `core.sshCommand` is kept; BatchMode is added so a missing key fails fast.
 
+## Team corpora (read-only mounts) and freshness
+
+Mount another knowledge repo — e.g. a team's [Martlet](https://github.com/CSUS-McGill/martlet)-style
+`knowledge/` — next to your own `docs/`:
+
+```bash
+# knowledge.env  (';'-separated name=dir; relative dirs resolve against the repo root)
+KB_MOUNTS=csus=../martlet-csus/knowledge
+```
+
+- Its docs are indexed and searched under `csus/…` alongside yours; `read_knowledge` serves them.
+- **Read-only**: `write_knowledge` / `delete_knowledge` refuse `csus/` paths. That repo keeps its
+  own review flow (edit there, open a PR); `git pull` it and restart the session to pick up changes.
+- **Freshness labels**: a doc whose frontmatter has `covers:` (code globs) is *code-tied*. When the
+  nearest `_meta.yaml` says the code moved (`verified_at`) after the doc's `last_verified`, search
+  results say `⚠ possibly stale: code moved …, last verified …` (or `⚠ never verified …`), so the
+  agent checks the code before trusting it. Verified docs show `verified <date>`. Works for your own
+  `docs/` too.
+- **Gaps**: searches that return nothing or only weak matches are logged; `bin/knowledge gaps`
+  lists the most-asked ones — the next things worth writing.
+
 ## Wiring into OpenCode
 
 Copy `opencode.json` to your workspace root (it's already in this repo — adjust the `command` path if needed) and restart OpenCode.
@@ -190,6 +211,7 @@ Set them in `<repo>/knowledge.env` (preferred) or the environment; the environme
 |---|---|---|
 | `DB_PATH` | `<install>/knowledge.db` | Path to the SQLite search index |
 | `DOCS_PATH` | `<install>/docs` | Markdown source-of-truth directory. `<install>` is the executable's directory, or its parent when that is `bin/` — resolved from the executable's path, never the caller's cwd (a cwd-relative default would follow whatever directory each session starts in). Required only if that `docs/` doesn't exist. |
+| `KB_MOUNTS` | _(unset)_ | Read-only extra corpora, `name=dir;name2=dir2` — served under `name/` (see Team corpora) |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `EMBED_PROVIDER` | _(unset = TF-IDF)_ | Set to `ollama` for semantic embeddings. If Ollama is unreachable at startup the server falls back to TF-IDF **without overwriting** stored provider vectors — search degrades, the index never does. |
 | `EMBED_URL` | `http://localhost:11434` | Ollama base URL |

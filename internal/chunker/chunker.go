@@ -122,6 +122,51 @@ func frontmatterBlock(s string) (block, rest string) {
 	return block, rest
 }
 
+// Freshness is the review metadata a doc's frontmatter may carry (Martlet's
+// schema): Covers lists the code globs the doc explains — non-empty marks it
+// code-tied — and LastVerified is the date (YYYY-MM-DD) a human last
+// confirmed it against reality.
+type Freshness struct {
+	Covers       []string
+	LastVerified string
+}
+
+// FreshnessOf parses `covers` (inline comma list or `- item` lines) and
+// `last_verified` from leading YAML frontmatter. Zero value when absent.
+func FreshnessOf(markdown string) Freshness {
+	block, _ := frontmatterBlock(markdown)
+	var f Freshness
+	inCovers := false
+	for _, line := range strings.Split(block, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if item, ok := strings.CutPrefix(strings.TrimSpace(line), "- "); ok && inCovers {
+			if item = strings.Trim(strings.TrimSpace(item), `"'`); item != "" {
+				f.Covers = append(f.Covers, item)
+			}
+			continue
+		}
+		key, value, found := strings.Cut(line, ":")
+		if !found || strings.HasPrefix(line, " ") {
+			inCovers = false
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		inCovers = false
+		switch strings.TrimSpace(key) {
+		case "covers":
+			inCovers = true
+			for _, c := range strings.Split(strings.Trim(value, "[]"), ",") {
+				if c = strings.Trim(strings.TrimSpace(c), `"'`); c != "" {
+					f.Covers = append(f.Covers, c)
+				}
+			}
+		case "last_verified":
+			f.LastVerified = value
+		}
+	}
+	return f
+}
+
 // Tags parses a comma-separated tags value from leading YAML frontmatter.
 // Returns nil when the document has no frontmatter or no tags key.
 func Tags(markdown string) []string {

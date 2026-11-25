@@ -17,7 +17,8 @@ func main() {
 	}
 
 	// Same resolution as the server: env > <install>/knowledge.env > install defaults.
-	if _, _, err := config.ApplyForExecutable(); err != nil {
+	root, _, err := config.ApplyForExecutable()
+	if err != nil {
 		fatalf("settings: %v", err)
 	}
 	dbPath := getenv("DB_PATH", "knowledge.db")
@@ -32,7 +33,9 @@ func main() {
 
 	switch os.Args[1] {
 	case "ingest":
-		doIngest(db)
+		doIngest(db, root)
+	case "gaps":
+		doGaps(db)
 	case "search":
 		doSearch(db)
 	default:
@@ -61,16 +64,40 @@ func applyEmbedConfig(db *store.Store) {
 	}
 }
 
-func doIngest(db *store.Store) {
+func doIngest(db *store.Store, root string) {
 	docsPath := getenv("DOCS_PATH", "docs")
 	if len(os.Args) >= 3 {
 		docsPath = os.Args[2]
 	}
+	// Mounts must be ingested too: Ingest prunes every doc it did not walk.
+	mounts, err := config.Mounts(os.Getenv("KB_MOUNTS"), root, docsPath)
+	if err != nil {
+		fatalf("%v", err)
+	}
 	fmt.Printf("Ingesting %s ...\n", docsPath)
-	if err := store.Ingest(db, docsPath); err != nil {
+	for _, m := range mounts {
+		fmt.Printf("  + %s/ (read-only) from %s\n", m.Name, m.Root)
+	}
+	if err := store.Ingest(db, docsPath, mounts...); err != nil {
 		fatalf("ingest: %v", err)
 	}
 	fmt.Println("Done.")
+}
+
+// doGaps lists searches that found nothing useful — the knowledge to write next.
+func doGaps(db *store.Store) {
+	gaps, err := db.Gaps(30)
+	if err != nil {
+		fatalf("gaps: %v", err)
+	}
+	if len(gaps) == 0 {
+		fmt.Println("No unanswered searches logged.")
+		return
+	}
+	fmt.Printf("%5s  %-5s  %-10s  %s\n", "times", "best", "last", "query")
+	for _, g := range gaps {
+		fmt.Printf("%5d  %-5s  %-10.10s  %s\n", g.Count, g.Outcome, g.Last, g.Query)
+	}
 }
 
 func doSearch(db *store.Store) {
@@ -105,7 +132,8 @@ func doSearch(db *store.Store) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: knowledge <command> [args]")
-	fmt.Fprintln(os.Stderr, "  ingest [path]    index .md files (default: $DOCS_PATH or docs/)")
+	fmt.Fprintln(os.Stderr, "  ingest [path]    index .md files (default: $DOCS_PATH or docs/) plus KB_MOUNTS")
+	fmt.Fprintln(os.Stderr, "  gaps             most-asked searches that found nothing useful")
 	fmt.Fprintln(os.Stderr, "  search <query>   search the knowledge base")
 	os.Exit(1)
 }

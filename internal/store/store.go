@@ -103,7 +103,9 @@ func (s *Store) syncGeneration() {
 //
 // v2 added: documents.tags, chunks.updated_at, and the meta table (which
 // records the embedding vector dimensions the corpus was built with).
-const currentSchemaVersion = 2
+// v3 added: documents.code_tied/last_verified/code_moved (freshness) and the
+// gaps table (searches that found nothing useful).
+const currentSchemaVersion = 3
 
 const schema = `
 PRAGMA journal_mode=WAL;
@@ -116,7 +118,10 @@ CREATE TABLE IF NOT EXISTS documents (
     path        TEXT    UNIQUE NOT NULL,
     title       TEXT,
     tags        TEXT,
-    ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    code_tied     INTEGER NOT NULL DEFAULT 0,
+    last_verified TEXT NOT NULL DEFAULT '',
+    code_moved    TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
@@ -146,6 +151,14 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS gaps (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    query       TEXT NOT NULL,
+    path_prefix TEXT NOT NULL DEFAULT '',
+    outcome     TEXT NOT NULL,
+    at          DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 // isDupColumnErr reports whether err is SQLite's "duplicate column name"
@@ -166,6 +179,20 @@ func migrateToV2(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
 		return fmt.Errorf("migrate meta table: %w", err)
+	}
+	return nil
+}
+
+// migrateToV3 adds the freshness columns; the gaps table comes from schema.
+func migrateToV3(db *sql.DB) error {
+	for _, col := range []string{
+		`code_tied INTEGER NOT NULL DEFAULT 0`,
+		`last_verified TEXT NOT NULL DEFAULT ''`,
+		`code_moved TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(`ALTER TABLE documents ADD COLUMN ` + col); err != nil && !isDupColumnErr(err) {
+			return fmt.Errorf("migrate documents.%s: %w", strings.Fields(col)[0], err)
+		}
 	}
 	return nil
 }
@@ -201,6 +228,10 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("database schema version %d is newer than this binary supports (%d) — upgrade knowledge-service", ver, currentSchemaVersion)
 	case ver < currentSchemaVersion:
 		if err := migrateToV2(db); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate to schema v%d: %w", currentSchemaVersion, err)
+		}
+		if err := migrateToV3(db); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate to schema v%d: %w", currentSchemaVersion, err)
 		}
