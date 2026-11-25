@@ -559,7 +559,7 @@ func TestSchemaMigrationFromV1(t *testing.T) {
 	}
 	_ = db.Close()
 
-	// Opening with the current binary migrates it to v2.
+	// Opening with the current binary migrates it to the current version.
 	s, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("open v1 db: %v", err)
@@ -568,11 +568,11 @@ func TestSchemaMigrationFromV1(t *testing.T) {
 
 	var ver int
 	_ = s.DB.QueryRow(`PRAGMA user_version`).Scan(&ver)
-	if ver != 2 {
-		t.Fatalf("user_version = %d, want 2 after migration", ver)
+	if ver != currentSchemaVersion {
+		t.Fatalf("user_version = %d, want %d after migration", ver, currentSchemaVersion)
 	}
 	// The new columns accept writes.
-	if _, err := s.DB.Exec(`INSERT INTO documents(path, title, tags) VALUES('x.md', 'X', 'a,b')`); err != nil {
+	if _, err := s.DB.Exec(`INSERT INTO documents(path, title, tags, code_tied, last_verified, code_moved) VALUES('x.md', 'X', 'a,b', 1, '2026-01-01', '2026-02-01')`); err != nil {
 		t.Fatalf("insert into migrated documents: %v", err)
 	}
 }

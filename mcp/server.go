@@ -29,8 +29,28 @@ type Server struct {
 	logger   *slog.Logger
 	docsPath string // if non-empty, write_knowledge persists to .md files here
 	version  string
+	mounts   []store.Mount   // read-only corpora served under "<name>/"
 	git      *gitsync.Syncer // nil unless KB_GIT_SYNC is enabled
 	pushes   sync.WaitGroup  // background pushes still running
+}
+
+// SetMounts registers read-only corpora (KB_MOUNTS). Their docs are indexed
+// under "<name>/"; read_knowledge serves them, write and delete refuse them.
+func (srv *Server) SetMounts(m []store.Mount) { srv.mounts = m }
+
+// mountOf returns the mount whose "<name>/" prefix mdPath starts with.
+func (srv *Server) mountOf(mdPath string) (store.Mount, bool) {
+	for _, m := range srv.mounts {
+		if strings.HasPrefix(mdPath, m.Name+"/") {
+			return m, true
+		}
+	}
+	return store.Mount{}, false
+}
+
+// readOnlyErr is the refusal for a write or delete aimed at a mount.
+func readOnlyErr(m store.Mount) string {
+	return fmt.Sprintf("%s/ is a read-only mount of %s — edit the markdown in that repo and open a PR there (it has its own review flow)", m.Name, m.Root)
 }
 
 // EnableGitSync makes write_knowledge and delete_knowledge commit the file
@@ -231,7 +251,7 @@ func toolsList() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "search_knowledge",
-			"description": "Search the knowledge base for relevant documentation, runbooks, solutions, and context. Call this before answering any question where prior knowledge might exist — infrastructure, architecture, debugging, procedures, or past incidents. If results are weak or absent, answer from your training and offer to save the solution afterward.",
+			"description": "Search the knowledge base for relevant documentation, runbooks, solutions, and context. Call this before answering any question where prior knowledge might exist — infrastructure, architecture, debugging, procedures, or past incidents. If results are weak or absent, answer from your training and offer to save the solution afterward. A result marked '⚠ possibly stale' or '⚠ never verified' explains code that changed since a human last checked it: verify against the code before relying on it.",
 			"annotations": map[string]any{"readOnlyHint": true},
 			"inputSchema": map[string]any{
 				"type":                 "object",
@@ -412,7 +432,14 @@ func (srv *Server) toolSearch(enc *json.Encoder, id json.RawMessage, raw json.Ra
 		return
 	}
 
-	text := formatResults(results, args.Query, srv.store.HasProvider())
+	neural := srv.store.HasProvider()
+	switch {
+	case len(results) == 0:
+		srv.store.LogGap(args.Query, args.PathPrefix, "none")
+	case allWeak(results, neural):
+		srv.store.LogGap(args.Query, args.PathPrefix, "weak")
+	}
+	text := formatResults(results, args.Query, neural, srv.store.DocStatusOf)
 	srv.reply(enc, id, map[string]any{
 		"content": []map[string]any{{"type": "text", "text": text}},
 	})
@@ -440,7 +467,11 @@ func (srv *Server) toolRead(enc *json.Encoder, id json.RawMessage, raw json.RawM
 	if !strings.HasSuffix(mdPath, ".md") {
 		mdPath += ".md"
 	}
-	filePath, err := safeFilePath(srv.docsPath, mdPath)
+	root, rel := srv.docsPath, mdPath
+	if m, ok := srv.mountOf(mdPath); ok {
+		root, rel = m.Root, strings.TrimPrefix(mdPath, m.Name+"/")
+	}
+	filePath, err := safeFilePath(root, rel)
 	if err != nil {
 		srv.replyErr(enc, id, -32602, "invalid path: "+err.Error())
 		return
@@ -541,6 +572,10 @@ func (srv *Server) toolWrite(enc *json.Encoder, id json.RawMessage, raw json.Raw
 	mdPath := args.Path
 	if !strings.HasSuffix(mdPath, ".md") {
 		mdPath += ".md"
+	}
+	if m, ok := srv.mountOf(mdPath); ok {
+		srv.replyErr(enc, id, -32602, readOnlyErr(m))
+		return
 	}
 	filePath, err := safeFilePath(srv.docsPath, mdPath)
 	if err != nil {
@@ -756,6 +791,10 @@ func (srv *Server) toolDelete(enc *json.Encoder, id json.RawMessage, raw json.Ra
 	mdPath := args.Path
 	if !strings.HasSuffix(mdPath, ".md") {
 		mdPath += ".md"
+	}
+	if m, ok := srv.mountOf(mdPath); ok {
+		srv.replyErr(enc, id, -32602, readOnlyErr(m))
+		return
 	}
 	filePath, err := safeFilePath(srv.docsPath, mdPath)
 	if err != nil {
@@ -994,7 +1033,19 @@ func scoreLabel(r store.Result, neural bool) string {
 	}
 }
 
-func formatResults(results []store.Result, query string, neural bool) string {
+// allWeak reports whether no result rises above a weak match.
+func allWeak(results []store.Result, neural bool) bool {
+	for _, r := range results {
+		if scoreLabel(r, neural) != "weak match" {
+			return false
+		}
+	}
+	return true
+}
+
+// formatResults renders hits for the model. status (may be nil) supplies each
+// doc's freshness, shown in the header so a stale answer is labelled as one.
+func formatResults(results []store.Result, query string, neural bool, status func(string) store.DocStatus) string {
 	if len(results) == 0 {
 		return fmt.Sprintf(
 			"No results found for: %q\n\nTip: use list_knowledge to see what topics exist, try broader or different terms, or use write_knowledge to add new content.",
@@ -1003,14 +1054,7 @@ func formatResults(results []store.Result, query string, neural bool) string {
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Knowledge base results for %q:\n\n", query)
-	allWeak := true
-	for _, r := range results {
-		if scoreLabel(r, neural) != "weak match" {
-			allWeak = false
-			break
-		}
-	}
-	if allWeak {
+	if allWeak(results, neural) {
 		sb.WriteString("No strong or relevant match — these share only a few query terms. Try concrete terms (error strings, component names) or list_knowledge.\n\n")
 	}
 	for i, r := range results {
@@ -1018,11 +1062,16 @@ func formatResults(results []store.Result, query string, neural bool) string {
 		if r.Heading != "" {
 			fmt.Fprintf(&sb, " / %s", r.Heading)
 		}
+		tags := []string{scoreLabel(r, neural)}
 		if updated := formatDate(r.Updated); updated != "" {
-			fmt.Fprintf(&sb, " [%s · updated %s]", scoreLabel(r, neural), updated)
-		} else {
-			fmt.Fprintf(&sb, " [%s]", scoreLabel(r, neural))
+			tags = append(tags, "updated "+updated)
 		}
+		if status != nil {
+			if l := status(r.Path).Label(); l != "" {
+				tags = append(tags, l)
+			}
+		}
+		fmt.Fprintf(&sb, " [%s]", strings.Join(tags, " · "))
 		fmt.Fprintf(&sb, " ---\n")
 		preview := r.Content
 		if len(preview) > maxPreviewChars {

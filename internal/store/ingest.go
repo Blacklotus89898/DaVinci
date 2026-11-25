@@ -9,14 +9,21 @@ import (
 	"strings"
 
 	"github.com/blacklotus88888/knowledge-service/internal/chunker"
+	"github.com/blacklotus88888/knowledge-service/internal/config"
 )
 
 type pendingDoc struct {
 	relPath string
 	title   string
 	tags    string // comma-separated frontmatter tags ("" when none)
+	status  DocStatus
 	chunks  []chunker.Chunk
 }
+
+// Mount is an extra, read-only corpus indexed under "<Name>/" — e.g. a team
+// knowledge repo (Martlet's knowledge/) next to the personal docs/. Writes
+// to it go through that repo's own review flow, never through this server.
+type Mount = config.Mount
 
 // Ingest walks docsPath for .md files and re-indexes them into s.
 // Documents not in the current walk are pruned. After all docs are committed,
@@ -25,10 +32,17 @@ type pendingDoc struct {
 // Ingest never embeds chunks itself: changed chunks get a NULL vector and
 // rebuildVocabAndVectors embeds exactly those (in provider mode). This keeps
 // startup and re-ingest cheap when content is unchanged.
-func Ingest(s *Store, docsPath string) error {
-	docs, err := loadDocs(docsPath)
+func Ingest(s *Store, docsPath string, mounts ...Mount) error {
+	docs, err := loadDocs(docsPath, "")
 	if err != nil {
 		return err
+	}
+	for _, m := range mounts {
+		md, err := loadDocs(m.Root, m.Name+"/")
+		if err != nil {
+			return fmt.Errorf("mount %s: %w", m.Name, err)
+		}
+		docs = append(docs, md...)
 	}
 
 	tx, err := s.DB.Begin()
@@ -85,7 +99,7 @@ func IngestOne(s *Store, docsPath, relPath string) error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", p, err)
 	}
-	doc, err := buildDoc(docsPath, p, string(data))
+	doc, err := buildDoc(docsPath, p, "", string(data))
 	if err != nil {
 		return err
 	}
@@ -114,9 +128,10 @@ func IngestOne(s *Store, docsPath, relPath string) error {
 // never re-embedded.
 func ingestDoc(tx *sql.Tx, doc *pendingDoc) error {
 	if _, err := tx.Exec(
-		`INSERT INTO documents(path, title, tags) VALUES(?,?,?)
-		 ON CONFLICT(path) DO UPDATE SET title=excluded.title, tags=excluded.tags, ingested_at=CURRENT_TIMESTAMP`,
-		doc.relPath, doc.title, doc.tags,
+		`INSERT INTO documents(path, title, tags, code_tied, last_verified, code_moved) VALUES(?,?,?,?,?,?)
+		 ON CONFLICT(path) DO UPDATE SET title=excluded.title, tags=excluded.tags, ingested_at=CURRENT_TIMESTAMP,
+		   code_tied=excluded.code_tied, last_verified=excluded.last_verified, code_moved=excluded.code_moved`,
+		doc.relPath, doc.title, doc.tags, doc.status.CodeTied, doc.status.LastVerified, doc.status.CodeMoved,
 	); err != nil {
 		return fmt.Errorf("insert document %s: %w", doc.relPath, err)
 	}
@@ -182,9 +197,15 @@ func ingestDoc(tx *sql.Tx, doc *pendingDoc) error {
 	return nil
 }
 
-// buildDoc reads one markdown file into a pendingDoc.
-func buildDoc(root, p, data string) (pendingDoc, error) {
+// buildDoc reads one markdown file into a pendingDoc. prefix ("" or
+// "<mount>/") is prepended to the root-relative path.
+func buildDoc(root, p, prefix, data string) (pendingDoc, error) {
 	tags := chunker.Tags(data)
+	fm := chunker.FreshnessOf(data)
+	status := DocStatus{CodeTied: len(fm.Covers) > 0, LastVerified: fm.LastVerified}
+	if status.CodeTied {
+		status.CodeMoved = pinDate(root, filepath.Dir(p))
+	}
 	all := chunker.Split(data)
 	title := ""
 	if len(all) > 0 {
@@ -206,14 +227,15 @@ func buildDoc(root, p, data string) (pendingDoc, error) {
 		return pendingDoc{}, fmt.Errorf("rel path for %s: %w", p, err)
 	}
 	return pendingDoc{
-		relPath: filepath.ToSlash(rel),
+		relPath: prefix + filepath.ToSlash(rel),
 		title:   title,
 		tags:    strings.Join(tags, ", "),
+		status:  status,
 		chunks:  chunks,
 	}, nil
 }
 
-func loadDocs(root string) ([]pendingDoc, error) {
+func loadDocs(root, prefix string) ([]pendingDoc, error) {
 	var docs []pendingDoc
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") {
@@ -223,7 +245,7 @@ func loadDocs(root string) ([]pendingDoc, error) {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", p, err)
 		}
-		doc, err := buildDoc(root, p, string(data))
+		doc, err := buildDoc(root, p, prefix, string(data))
 		if err != nil {
 			return err
 		}

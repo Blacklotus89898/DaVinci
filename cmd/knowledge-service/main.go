@@ -63,6 +63,15 @@ func main() {
 		}
 	}
 
+	mounts, err := config.Mounts(os.Getenv("KB_MOUNTS"), root, docsPath)
+	if err != nil {
+		logger.Error("bad KB_MOUNTS", "err", err)
+		os.Exit(1)
+	}
+	for _, m := range mounts {
+		logger.Info("read-only mount", "prefix", m.Name+"/", "root", m.Root)
+	}
+
 	db, err := store.Open(dbPath)
 	if err != nil {
 		logger.Error("failed to open database", "path", dbPath, "err", err)
@@ -99,7 +108,7 @@ func main() {
 	if release, err := lock.Acquire(filepath.Join(docsPath, ".knowledge.lock")); err != nil {
 		logger.Warn("startup ingest skipped — could not acquire write lock", "err", err)
 	} else {
-		if err := store.Ingest(db, docsPath); err != nil {
+		if err := store.Ingest(db, docsPath, mounts...); err != nil {
 			logger.Warn("startup ingest failed", "path", docsPath, "err", err)
 		} else {
 			logger.Info("docs synced", "path", docsPath)
@@ -108,6 +117,7 @@ func main() {
 	}
 
 	srv := mcp.NewServer(db, logger, docsPath, version)
+	srv.SetMounts(mounts)
 
 	// Optional: commit + push every KB write so the git remote (other devices,
 	// Warden) never lags. Only commits while the repo is on KB_GIT_BRANCH.

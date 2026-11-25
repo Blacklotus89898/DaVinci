@@ -126,3 +126,53 @@ func isDir(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && fi.IsDir()
 }
+
+// Mount is one KB_MOUNTS entry: a read-only corpus served under "<Name>/".
+type Mount struct{ Name, Root string }
+
+// Mounts parses KB_MOUNTS — "name=dir;name2=dir2" (';' because Windows paths
+// contain ':'). Relative dirs resolve against the install root, never the cwd.
+// A name must be lowercase [a-z0-9-], must not shadow a top-level directory
+// of docsPath (paths would become ambiguous), and its dir must exist.
+func Mounts(value, root, docsPath string) ([]Mount, error) {
+	var out []Mount
+	seen := map[string]bool{}
+	for _, entry := range strings.Split(value, ";") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		name, dir, ok := strings.Cut(entry, "=")
+		name, dir = strings.TrimSpace(name), strings.TrimSpace(dir)
+		if !ok || !validMountName(name) || dir == "" {
+			return nil, fmt.Errorf("KB_MOUNTS: %q is not name=dir with a lowercase [a-z0-9-] name", entry)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("KB_MOUNTS: mount %q listed twice", name)
+		}
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(root, dir)
+		}
+		if !isDir(dir) {
+			return nil, fmt.Errorf("KB_MOUNTS: %s: %s is not a directory", name, dir)
+		}
+		if docsPath != "" && isDir(filepath.Join(docsPath, name)) {
+			return nil, fmt.Errorf("KB_MOUNTS: mount %q shadows %s — rename the mount", name, filepath.Join(docsPath, name))
+		}
+		seen[name] = true
+		out = append(out, Mount{Name: name, Root: dir})
+	}
+	return out, nil
+}
+
+func validMountName(s string) bool {
+	if s == "" || s[0] == '-' {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
+}
