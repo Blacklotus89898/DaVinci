@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.2.6](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.5...knowledge-service-v0.2.6) (2026-11-26)
+
+
+### Features
+
+* read-only team mounts, freshness labels, and search-gap log ([8ef1813](https://github.com/Blacklotus89898/DaVinci/commit/8ef181345ade1f6fc16167cd6e82b49c053bda64))
+* read-only team mounts, freshness labels, and search-gap log ([77e52f0](https://github.com/Blacklotus89898/DaVinci/commit/77e52f040bd130658aa6582f3da210a78aeed5d7))
+
 ## [0.2.5](https://github.com/Blacklotus89898/DaVinci/compare/knowledge-service-v0.2.4...knowledge-service-v0.2.5) (2026-11-05)
 
 
